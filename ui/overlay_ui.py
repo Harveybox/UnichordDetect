@@ -115,6 +115,14 @@ class OverlayWindow(QtWidgets.QWidget):
         controls_layout.addWidget(self.bass_focus_cb)
         controls_layout.addWidget(self.viterbi_cb)
 
+        # display seconds control (scroll speed / zoom)
+        self.display_seconds_sb = QtWidgets.QDoubleSpinBox()
+        self.display_seconds_sb.setRange(5.0, 600.0)
+        self.display_seconds_sb.setSuffix(" s")
+        self.display_seconds_sb.setSingleStep(5.0)
+        controls_layout.addWidget(QtWidgets.QLabel("Timeline Width:"))
+        controls_layout.addWidget(self.display_seconds_sb)
+
         # bass param controls
         bass_inner = QtWidgets.QFormLayout()
         self.bass_low_sb = QtWidgets.QDoubleSpinBox()
@@ -151,6 +159,7 @@ class OverlayWindow(QtWidgets.QWidget):
         self.low_latency_cb.stateChanged.connect(self._emit_settings)
         self.bass_focus_cb.stateChanged.connect(self._emit_settings)
         self.viterbi_cb.stateChanged.connect(self._emit_settings)
+        self.display_seconds_sb.valueChanged.connect(self._on_display_seconds_changed)
         self.bass_low_sb.valueChanged.connect(self._emit_settings)
         self.bass_high_sb.valueChanged.connect(self._emit_settings)
         self.bass_weight_sb.valueChanged.connect(self._emit_settings)
@@ -181,6 +190,13 @@ class OverlayWindow(QtWidgets.QWidget):
         self.bass_low_sb.setValue(float(s.get("bass_low", 50.0)))
         self.bass_high_sb.setValue(float(s.get("bass_high", 350.0)))
         self.bass_weight_sb.setValue(float(s.get("bass_weight", 3.0)))
+        self.viterbi_cb.setChecked(bool(s.get("use_viterbi", False)))
+        self.display_seconds_sb.setValue(float(s.get("ui_display_seconds", 90.0)))
+        # apply immediately
+        try:
+            self.timeline_widget.display_seconds = float(s.get("ui_display_seconds", 90.0))
+        except Exception:
+            pass
 
     def _emit_settings(self, _=None):
         if not self._on_settings_change:
@@ -197,6 +213,13 @@ class OverlayWindow(QtWidgets.QWidget):
             self._on_settings_change(s)
         except Exception:
             # swallow exceptions from callback to avoid crashing UI
+            pass
+
+    def _on_display_seconds_changed(self, v: float):
+        try:
+            self.timeline_widget.display_seconds = float(v)
+            self.timeline_widget.update()
+        except Exception:
             pass
 
     def update_beats(self, beats: List[float]):

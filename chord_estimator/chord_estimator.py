@@ -175,8 +175,8 @@ class ChordEstimator:
 
                 # compute chroma and also track onset / beat info and bass energy
                 chroma = self._compute_chroma_from_mono(mono, self.sample_rate)
-                # update onset env and beat tracker
-                self._update_onset_and_beat(mono, self.sample_rate, time_provider())
+                # update onset env and beat tracker (use real time epoch for UI)
+                self._update_onset_and_beat(mono, self.sample_rate, time.time())
                 # attempt bass root extraction
                 bass_root, bass_conf = self._extract_bass_root(mono, self.sample_rate)
                 label, confidence = self._match_chord(chroma, bass_root=bass_root, bass_conf=bass_conf)
@@ -227,13 +227,14 @@ class ChordEstimator:
         if chroma.sum() > 0:
             chroma /= chroma.sum()
         # exponential moving average to stabilize chroma against transient melodies
-        if self._chroma_state is None:
-            self._chroma_state = chroma
-        else:
-            self._chroma_state = (
-                self.chroma_ema * self._chroma_state + (1 - self.chroma_ema) * chroma
-            )
-        smoothed = self._chroma_state.copy()
+        with self.lock:
+            if self._chroma_state is None:
+                self._chroma_state = chroma
+            else:
+                self._chroma_state = (
+                    self.chroma_ema * self._chroma_state + (1 - self.chroma_ema) * chroma
+                )
+            smoothed = self._chroma_state.copy()
         if smoothed.sum() > 0:
             smoothed /= smoothed.sum()
         return smoothed
@@ -325,11 +326,12 @@ class ChordEstimator:
         return best_label, margin
 
     def _reset_state_for_silence(self) -> None:
-        self.frame_queue.clear()
-        self._chroma_state = None
-        self._viterbi_prev = None
-        self._last_label = "N"
-        self._last_change_time = None
+        with self.lock:
+            self.frame_queue.clear()
+            self._chroma_state = None
+            self._viterbi_prev = None
+            self._last_label = "N"
+            self._last_change_time = None
 
     def update_params(self, params: dict) -> None:
         """Update estimator parameters at runtime. Accepts a dict with keys
@@ -363,29 +365,30 @@ class ChordEstimator:
                 self.use_viterbi = bool(params["use_viterbi"])
 
     def _smooth(self, label: str, timestamp: float) -> str:
-        self.frame_queue.append(label)
-        if len(self.frame_queue) > self.smoothing_frames:
-            self.frame_queue.popleft()
-        counter = Counter(self.frame_queue)
-        majority = counter.most_common(1)[0][0]
-        if majority != self._last_label:
-            # allow faster first change from silence/unknown
-            if self._last_label == "N" and majority != "N":
+        with self.lock:
+            self.frame_queue.append(label)
+            if len(self.frame_queue) > self.smoothing_frames:
+                self.frame_queue.popleft()
+            counter = Counter(self.frame_queue)
+            majority = counter.most_common(1)[0][0]
+            if majority != self._last_label:
+                # allow faster first change from silence/unknown
+                if self._last_label == "N" and majority != "N":
+                    self._last_change_time = timestamp
+                    self._last_label = majority
+                    return majority
+                # require minimum duration before committing change
+                if self._last_change_time is None:
+                    self._last_change_time = timestamp
+                    return self._last_label
+                if timestamp - self._last_change_time < self.min_confirm_seconds:
+                    return self._last_label
                 self._last_change_time = timestamp
                 self._last_label = majority
                 return majority
-            # require minimum duration before committing change
-            if self._last_change_time is None:
-                self._last_change_time = timestamp
-                return self._last_label
-            if timestamp - self._last_change_time < self.min_confirm_seconds:
-                return self._last_label
             self._last_change_time = timestamp
             self._last_label = majority
             return majority
-        self._last_change_time = timestamp
-        self._last_label = majority
-        return majority
 
 
 __all__ = ["ChordEstimator", "ChordEstimate"]
