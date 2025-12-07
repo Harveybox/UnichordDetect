@@ -1,4 +1,10 @@
-PyAudio
+# WASAPI loopback support (Windows): prefer pyaudiowpatch when on Windows.
+pyaudiowpatch; sys_platform == "win32"
+# Fallback loopback capture (Windows) if pyaudiowpatch unavailable
+soundcard; sys_platform == "win32"
+# For non-Windows development / fallback
+PyAudio; sys_platform != "win32"
+
 numpy
 PySide6==6.7
 

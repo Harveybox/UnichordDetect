@@ -3,16 +3,31 @@ import time
 from collections import deque
 from typing import Deque, List, Optional, Tuple
 import os
+import sys
 
 import numpy as np
 
+pyaudio = None
+soundcard_lib = None
+use_soundcard = False
+
+# Try to import pyaudiowpatch first (preferred for WASAPI loopback)
 try:
-    import pyaudiowpatch as pyaudio  # preferred WASAPI build
+    import pyaudiowpatch as pyaudio
 except ImportError:
-    try:
-        import pyaudio  # fallback if user installed plain PyAudio
-    except ImportError:  # pragma: no cover - runtime dependency
-        pyaudio = None
+    # If pyaudiowpatch not available and on Windows, try soundcard as fallback
+    if sys.platform == "win32":
+        try:
+            import soundcard as soundcard_lib
+            use_soundcard = True
+        except ImportError:
+            pass
+    # Finally, fallback to regular PyAudio
+    if not use_soundcard:
+        try:
+            import pyaudio
+        except ImportError:
+            pass
 
 
 class LoopbackDevice:
@@ -72,8 +87,26 @@ class LoopbackCapture:
         ring_seconds: int = 5,
         allow_fallback: Optional[bool] = None,
     ):
+        # If use_soundcard flag is set, delegate to soundcard implementation
+        if use_soundcard:
+            from audio_capture.audio_capture_soundcard import SoundcardLoopbackCapture
+            self._impl = SoundcardLoopbackCapture(
+                device_index=device_index,
+                target_sample_rate=target_sample_rate,
+                ring_seconds=ring_seconds,
+            )
+            self.device_index = device_index
+            self.target_sample_rate = target_sample_rate
+            self.sample_rate = target_sample_rate
+            self.channels = 2
+            self._use_fallback_impl = True
+            return
+
+        self._use_fallback_impl = False
         if pyaudio is None:
-            raise RuntimeError("pyaudiowpatch is required for WASAPI loopback")
+            raise RuntimeError(
+                "No audio library available. Install pyaudiowpatch (Windows WASAPI) or PyAudio."
+            )
         self.pa = pyaudio.PyAudio()
         self.device_index = device_index
         self.target_sample_rate = target_sample_rate
@@ -89,6 +122,8 @@ class LoopbackCapture:
             self.allow_fallback = bool(allow_fallback)
 
     def list_loopback_devices(self) -> List[LoopbackDevice]:
+        if self._use_fallback_impl:
+            return self._impl.list_loopback_devices()
         devices: List[LoopbackDevice] = []
         for i in range(self.pa.get_device_count()):
             info = self.pa.get_device_info_by_index(i)
@@ -144,6 +179,8 @@ class LoopbackCapture:
         return devices[0]
 
     def start(self) -> Tuple[int, int]:
+        if self._use_fallback_impl:
+            return self._impl.start()
         device = self._select_device()
         self.sample_rate = int(device.sample_rate)
         self.channels = min(device.max_input_channels or 2, 2)
@@ -170,9 +207,13 @@ class LoopbackCapture:
         return self.sample_rate, self.channels
 
     def read(self, num_frames: int) -> Optional[np.ndarray]:
+        if self._use_fallback_impl:
+            return self._impl.read(num_frames)
         return self.ring_buffer.pop(num_frames)
 
     def stop(self) -> None:
+        if self._use_fallback_impl:
+            return self._impl.stop()
         self._stop.set()
         if self.stream is not None:
             while self.stream.is_active():

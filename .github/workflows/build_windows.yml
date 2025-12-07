@@ -22,7 +22,11 @@ jobs:
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
-      - name: Install dependencies
+      - name: Try install pyaudiowpatch (preferred for WASAPI loopback)
+        run: |
+          python -m pip install pyaudiowpatch || echo "pyaudiowpatch not available, will use soundcard fallback"
+
+      - name: Install dependencies from requirements
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
