@@ -6,35 +6,67 @@ import time
 from functools import partial
 
 from audio_capture.audio_capture_wasapi_loopback import LoopbackCapture
+from chord_estimator.autochord_streaming import AutoChordStreamingEstimator
 from chord_estimator.chord_estimator import ChordEstimator
+from chord_estimator.chordino_streaming import ChordinoStreamingEstimator
 from timeline.timeline import Timeline
 from ui.overlay_ui import run_overlay_app
 
 DEFAULTS = {
     "sample_rate": 48000,
-    "window_seconds": 2.0,  # wider window -> more harmonic context, less melody jitter
-    "hop_seconds": 0.2,
-    "smoothing_frames": 9,
-    "min_confirm_seconds": 1.0,
-    "chroma_ema": 0.75,
+    "window_seconds": 0.7,  # balance speed and stability
+    "hop_seconds": 0.08,  # responsive hop
+    "smoothing_frames": 4,  # moderate smoothing to resist melody
+    "min_confirm_seconds": 0.5,  # faster than bar-length but avoids flicker
+    "chroma_ema": 0.6,  # moderate EMA
+    "viterbi_switch_penalty": 0.0,  # keep Viterbi off
+    "ring_seconds": 20,
     "ui_display_seconds": 90.0,
     "timeline_max_seconds": 120.0,
+    "autochord_analysis_seconds": 12.0,
+    "autochord_hop_seconds": 3.0,
 }
 
 
-def run_app(device_index: int | None):
-    capture = LoopbackCapture(device_index=device_index, target_sample_rate=DEFAULTS["sample_rate"])
+def run_app(device_index: int | None, engine: str, vamp_path: str | None):
+    capture = LoopbackCapture(
+        device_index=device_index,
+        target_sample_rate=DEFAULTS["sample_rate"],
+        ring_seconds=DEFAULTS["ring_seconds"],
+    )
     sample_rate, _channels = capture.start()
 
     timeline = Timeline(max_duration=DEFAULTS["timeline_max_seconds"])
-    estimator = ChordEstimator(
-        sample_rate=sample_rate,
-        window_seconds=DEFAULTS["window_seconds"],
-        hop_seconds=DEFAULTS["hop_seconds"],
-        smoothing_frames=DEFAULTS["smoothing_frames"],
-        min_confirm_seconds=DEFAULTS["min_confirm_seconds"],
-        chroma_ema=DEFAULTS["chroma_ema"],
-    )
+    if engine == "autochord":
+        estimator = AutoChordStreamingEstimator(
+            sample_rate=sample_rate,
+            analysis_seconds=DEFAULTS["autochord_analysis_seconds"],
+            hop_seconds=DEFAULTS["autochord_hop_seconds"],
+            target_sr=44100,
+        )
+    elif engine == "chordino":
+        estimator = ChordinoStreamingEstimator(
+            sample_rate=sample_rate,
+            analysis_seconds=DEFAULTS["autochord_analysis_seconds"],
+            hop_seconds=DEFAULTS["autochord_hop_seconds"],
+            target_sr=44100,
+            vamp_path=vamp_path,
+        )
+    else:
+        estimator = ChordEstimator(
+            sample_rate=sample_rate,
+            window_seconds=DEFAULTS["window_seconds"],
+            hop_seconds=DEFAULTS["hop_seconds"],
+            smoothing_frames=DEFAULTS["smoothing_frames"],
+            min_confirm_seconds=DEFAULTS["min_confirm_seconds"],
+            chroma_ema=DEFAULTS["chroma_ema"],
+            viterbi_switch_penalty=DEFAULTS["viterbi_switch_penalty"],
+            min_chroma_energy=1e-5,
+            low_freq_boost=3.0,
+            hi_freq_cutoff=1200.0,
+            high_freq_attenuation=0.25,
+            use_viterbi=False,
+        )
 
     stop_event = threading.Event()
 
@@ -76,13 +108,25 @@ def main():
     parser = argparse.ArgumentParser(description="Universal chord recognition overlay")
     parser.add_argument("--device", type=int, default=None, help="WASAPI loopback device index")
     parser.add_argument("--list-devices", action="store_true", help="List loopback devices and exit")
+    parser.add_argument(
+        "--engine",
+        choices=["simple", "autochord", "chordino"],
+        default="simple",
+        help="Chord estimator engine (default: simple)",
+    )
+    parser.add_argument(
+        "--vamp-path",
+        type=str,
+        default=None,
+        help="Path to VAMP plugins (set if using chordino engine)",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
         list_devices()
         return
 
-    run_app(args.device)
+    run_app(args.device, args.engine, args.vamp_path)
 
 
 if __name__ == "__main__":

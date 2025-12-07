@@ -22,6 +22,13 @@ class ChordEstimator:
         smoothing_frames: int = 7,
         min_confirm_seconds: float = 0.8,
         chroma_ema: float = 0.7,
+        viterbi_switch_penalty: float = 0.8,
+        min_chroma_energy: float = 1e-4,
+        low_freq_boost: float = 2.0,
+        hi_freq_cutoff: float = 1800.0,
+        silence_rms: float = 1e-3,
+        use_viterbi: bool = False,
+        high_freq_attenuation: float = 0.3,
     ):
         self.sample_rate = sample_rate
         self.window_size = int(window_seconds * sample_rate)
@@ -29,19 +36,28 @@ class ChordEstimator:
         self.smoothing_frames = smoothing_frames
         self.min_confirm_seconds = min_confirm_seconds
         self.chroma_ema = chroma_ema
+        self.viterbi_switch_penalty = viterbi_switch_penalty
+        self.min_chroma_energy = min_chroma_energy
+        self.low_freq_boost = low_freq_boost
+        self.hi_freq_cutoff = hi_freq_cutoff
+        self.silence_rms = silence_rms
+        self.use_viterbi = use_viterbi
+        self.high_freq_attenuation = high_freq_attenuation
         self.buffer: Deque[NDArray[np.int16]] = deque()
         self.frame_queue: Deque[ChordEstimate] = deque(maxlen=smoothing_frames)
         self.lock = threading.Lock()
-        self.templates = self._build_templates()
+        self.templates, self.states = self._build_templates()
+        self.state_to_idx = {s: i for i, s in enumerate(self.states)}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.on_estimate = None  # callback receiving ChordEstimate
         self._last_label = "N"
         self._last_change_time: Optional[float] = None
         self._chroma_state: Optional[NDArray[np.float32]] = None
+        self._viterbi_prev: Optional[NDArray[np.float32]] = None
 
     @staticmethod
-    def _build_templates() -> dict:
+    def _build_templates() -> Tuple[dict, List[str]]:
         templates = {}
         # major and minor triads across 12 pitch classes
         for i, name in enumerate(["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]):
@@ -56,7 +72,8 @@ class ChordEstimator:
             vec_min[(i + 7) % 12] = 0.9
             templates[f"{name}:min"] = vec_min
         templates["N"] = np.zeros(12)
-        return templates
+        states = list(templates.keys())
+        return templates, states
 
     def start(self, ring_buffer, time_provider) -> None:
         self._stop.clear()
@@ -87,7 +104,17 @@ class ChordEstimator:
 
             while current is not None and len(current) >= self.window_size:
                 window = current[-self.window_size :]
-                chroma = self._compute_chroma(window, self.sample_rate)
+                mono = window.mean(axis=1).astype(np.float32) / 32768.0
+                rms = float(np.sqrt(np.mean(mono * mono)))
+                if rms < self.silence_rms:
+                    self._reset_state_for_silence()
+                    if self.on_estimate:
+                        ts = time_provider()
+                        self.on_estimate(ChordEstimate("N", 0.0, ts))
+                    current = current[hop:]
+                    continue
+
+                chroma = self._compute_chroma_from_mono(mono, self.sample_rate)
                 label, confidence = self._match_chord(chroma)
                 timestamp = time_provider()
                 smoothed_label = self._smooth(label, timestamp)
@@ -96,19 +123,24 @@ class ChordEstimator:
                     self.on_estimate(estimate)
                 current = current[hop:]
 
-    def _compute_chroma(self, frames: NDArray[np.int16], sr: int) -> NDArray[np.float32]:
-        mono = frames.mean(axis=1).astype(np.float32)
-        mono = mono / 32768.0
+    def _compute_chroma_from_mono(self, mono: NDArray[np.float32], sr: int) -> NDArray[np.float32]:
         window = np.hanning(len(mono))
         spectrum = np.abs(np.fft.rfft(mono * window))
         freqs = np.fft.rfftfreq(len(mono), 1.0 / sr)
         chroma = np.zeros(12, dtype=np.float32)
         for mag, freq in zip(spectrum, freqs):
-            # discard very low or very high energy to avoid bass rumble / melody piercing through
-            if freq < 70 or freq > 2500:
+            # discard very low or very high energy to avoid bass rumble / ultrahigh hiss
+            if freq < 50 or freq > self.hi_freq_cutoff:
                 continue
             pc = int(round(12 * np.log2(freq / 440.0) + 69)) % 12
-            chroma[pc] += mag
+            # emphasize low-mid (bass instruments) to reduce vocal dominance
+            if freq < 350:
+                weight = self.low_freq_boost
+            elif freq > 800:
+                weight = self.high_freq_attenuation
+            else:
+                weight = 1.0
+            chroma[pc] += mag * weight
         if chroma.sum() > 0:
             chroma /= chroma.sum()
         # exponential moving average to stabilize chroma against transient melodies
@@ -124,23 +156,42 @@ class ChordEstimator:
         return smoothed
 
     def _match_chord(self, chroma: NDArray[np.float32]) -> Tuple[str, float]:
-        best_label = "N"
-        best_score = -1.0
-        second_score = -1.0
-        for label, tmpl in self.templates.items():
-            if label == "N":
-                continue
-            score = float(np.dot(chroma, tmpl))
-            if score > best_score:
-                second_score = best_score
-                best_score = score
-                best_label = label
-            elif score > second_score:
-                second_score = score
-        confidence = max(0.0, best_score - second_score) if second_score >= 0 else max(0.0, best_score)
-        if best_score < 0.01:
+        scores = np.array([float(np.dot(chroma, self.templates[s])) for s in self.states], dtype=np.float32)
+        energy = scores.sum()
+        if energy < self.min_chroma_energy:
             return "N", 0.0
-        return best_label, confidence
+        # avoid all-zero; add tiny floor and normalize for emission
+        scores = np.maximum(scores, 1e-6)
+        emission = scores / scores.sum()
+
+        if self.use_viterbi:
+            # Viterbi smoothing: prefer staying in the same chord unless evidence is strong
+            if self._viterbi_prev is None:
+                v_prev = np.log(emission)
+            else:
+                # slight decay to avoid hard lock into one state
+                stay_scores = self._viterbi_prev - 0.05  # decay over time
+                switch_best = np.max(self._viterbi_prev) - self.viterbi_switch_penalty
+                # combine stay vs switch
+                combined = np.maximum(stay_scores, switch_best)
+                v_prev = combined + np.log(emission)
+            self._viterbi_prev = v_prev
+            best_idx = int(np.argmax(v_prev))
+        else:
+            self._viterbi_prev = None
+            best_idx = int(np.argmax(emission))
+        # confidence from emission margin (top vs second)
+        top2 = np.partition(emission, -2)[-2:]
+        margin = float(top2[-1] - top2[-2]) if top2.size == 2 else float(top2[-1])
+        best_label = self.states[best_idx]
+        return best_label, margin
+
+    def _reset_state_for_silence(self) -> None:
+        self.frame_queue.clear()
+        self._chroma_state = None
+        self._viterbi_prev = None
+        self._last_label = "N"
+        self._last_change_time = None
 
     def _smooth(self, label: str, timestamp: float) -> str:
         self.frame_queue.append(label)
@@ -149,6 +200,11 @@ class ChordEstimator:
         counter = Counter(self.frame_queue)
         majority = counter.most_common(1)[0][0]
         if majority != self._last_label:
+            # allow faster first change from silence/unknown
+            if self._last_label == "N" and majority != "N":
+                self._last_change_time = timestamp
+                self._last_label = majority
+                return majority
             # require minimum duration before committing change
             if self._last_change_time is None:
                 self._last_change_time = timestamp

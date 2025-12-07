@@ -57,6 +57,14 @@
   ```bash
   python main.py
   ```
+- 使用神经网络 AutoChord 引擎（需先安装可选依赖，见文末）：
+  ```bash
+  python main.py --engine autochord
+  ```
+- 使用 VAMP Chordino 引擎（需安装 `vamp` 模块和 chordino 插件，见文末）：
+  ```bash
+  python main.py --engine chordino --vamp-path <VAMP插件目录>
+  ```
 - 指定设备索引：
   ```bash
   python main.py --device 5
