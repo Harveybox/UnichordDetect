@@ -27,9 +27,12 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build executable with PyInstaller
+      - name: Build executables with PyInstaller
         run: |
-          pyinstaller --noconsole --onefile main.py
+          # Build GUI (no console) binary
+          pyinstaller --noconsole --onefile --name unichord_gui main.py
+          # Build console binary for diagnostics (captures stdout)
+          pyinstaller --onefile --name unichord_console main.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
