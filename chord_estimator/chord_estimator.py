@@ -343,6 +343,8 @@ class ChordEstimator:
         with self.lock:
             if "window_seconds" in params:
                 self.window_size = int(params["window_seconds"] * self.sample_rate)
+                # reset onset state when window changes (spectral size will differ)
+                self._onset_env_prev = None
             if "hop_seconds" in params:
                 self.hop_size = int(params["hop_seconds"] * self.sample_rate)
             if "smoothing_frames" in params:
