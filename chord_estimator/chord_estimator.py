@@ -142,8 +142,11 @@ class ChordEstimator:
 
     def _worker(self, ring_buffer, time_provider) -> None:
         current: NDArray[np.int16] | None = None
-        hop = self.hop_size
         while not self._stop.is_set():
+            # read current hop/window under lock to avoid inconsistent mid-update values
+            with self.lock:
+                hop = int(self.hop_size)
+                window_size = int(self.window_size)
             needed = hop
             chunk = ring_buffer.read(needed)
             if chunk is None:
@@ -157,8 +160,9 @@ class ChordEstimator:
                 else:
                     current = np.vstack([current, chunk])
 
-            while current is not None and len(current) >= self.window_size:
-                window = current[-self.window_size :]
+            # use window_size captured under lock
+            while current is not None and len(current) >= window_size:
+                window = current[-window_size :]
                 mono = window.mean(axis=1).astype(np.float32) / 32768.0
                 rms = float(np.sqrt(np.mean(mono * mono)))
                 if rms < self.silence_rms:
@@ -182,6 +186,11 @@ class ChordEstimator:
                 if self.on_estimate:
                     self.on_estimate(estimate)
                 current = current[hop:]
+
+    def get_onsets(self) -> List[float]:
+        """Return a copy of recent onset times (seconds from epoch) for visualization."""
+        with self.lock:
+            return list(self._onset_times)
 
     def _compute_chroma_from_mono(self, mono: NDArray[np.float32], sr: int) -> NDArray[np.float32]:
         window = np.hanning(len(mono))
@@ -350,6 +359,8 @@ class ChordEstimator:
                 self.bass_high = float(params["bass_high"])
             if "bass_weight" in params:
                 self.bass_weight = float(params["bass_weight"])
+            if "use_viterbi" in params:
+                self.use_viterbi = bool(params["use_viterbi"])
 
     def _smooth(self, label: str, timestamp: float) -> str:
         self.frame_queue.append(label)

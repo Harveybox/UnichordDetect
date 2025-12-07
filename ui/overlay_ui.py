@@ -1,4 +1,5 @@
 import sys
+import time
 from typing import List
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -11,7 +12,8 @@ class TimelineWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.display_seconds = display_seconds
         self.segments: List[Segment] = []
-        self.setMinimumHeight(120)
+        self.beats: List[float] = []
+        self.setMinimumHeight(140)
 
     def update_segments(self, segments: List[Segment]):
         self.segments = segments
@@ -21,11 +23,18 @@ class TimelineWidget(QtWidgets.QWidget):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 180))
-        if not self.segments:
-            return
-        now = self.segments[-1].end
+        now = self.segments[-1].end if self.segments else time.time()
         width = self.width()
         height = self.height()
+        # draw beat markers as thin vertical lines
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 90), 1, QtCore.Qt.SolidLine))
+        for b in self.beats:
+            offset = max(0.0, now - b)
+            if offset > self.display_seconds:
+                continue
+            x = width * (1 - offset / self.display_seconds)
+            painter.drawLine(int(x), 0, int(x), height)
+
         for seg in self.segments:
             start_offset = max(0.0, now - seg.end)
             end_offset = max(0.0, now - seg.start)
@@ -81,55 +90,70 @@ class OverlayWindow(QtWidgets.QWidget):
         header = QtWidgets.QHBoxLayout()
         self.label_display = QtWidgets.QLabel("N")
         font = QtGui.QFont()
-        font.setPointSize(32)
+        font.setPointSize(28)
         font.setBold(True)
         self.label_display.setFont(font)
         self.label_display.setStyleSheet("color: white")
         header.addWidget(self.label_display)
         header.addStretch(1)
-        # Controls area: settings for debugging
-        controls = QtWidgets.QHBoxLayout()
-        self.low_latency_cb = QtWidgets.QCheckBox("低延迟")
-        self.bass_focus_cb = QtWidgets.QCheckBox("低频聚焦")
-        # spinboxes for bass band
-        self.bass_low_sb = QtWidgets.QDoubleSpinBox()
-        self.bass_low_sb.setPrefix("低频低端:")
-        self.bass_low_sb.setSuffix(" Hz")
-        self.bass_low_sb.setRange(20.0, 300.0)
-        self.bass_low_sb.setSingleStep(10.0)
-        self.bass_high_sb = QtWidgets.QDoubleSpinBox()
-        self.bass_high_sb.setPrefix("低频高端:")
-        self.bass_high_sb.setSuffix(" Hz")
-        self.bass_high_sb.setRange(60.0, 1000.0)
-        self.bass_high_sb.setSingleStep(10.0)
-        self.bass_weight_sb = QtWidgets.QDoubleSpinBox()
-        self.bass_weight_sb.setPrefix("权重:")
-        self.bass_weight_sb.setSingleStep(0.5)
-        self.bass_weight_sb.setRange(0.1, 10.0)
 
+        # Controls area on left
+        controls_widget = QtWidgets.QWidget()
+        controls_widget.setFixedWidth(280)
+        controls_layout = QtWidgets.QVBoxLayout()
+        controls_layout.setContentsMargins(4, 4, 4, 4)
+        controls_widget.setLayout(controls_layout)
+
+        title = QtWidgets.QLabel("Settings")
+        title.setStyleSheet("color: white")
+        controls_layout.addWidget(title)
+
+        self.low_latency_cb = QtWidgets.QCheckBox("Low Latency")
+        self.bass_focus_cb = QtWidgets.QCheckBox("Bass Focus")
+        self.viterbi_cb = QtWidgets.QCheckBox("Use Viterbi")
+        controls_layout.addWidget(self.low_latency_cb)
+        controls_layout.addWidget(self.bass_focus_cb)
+        controls_layout.addWidget(self.viterbi_cb)
+
+        # bass param controls
+        bass_inner = QtWidgets.QFormLayout()
+        self.bass_low_sb = QtWidgets.QDoubleSpinBox()
+        self.bass_low_sb.setRange(20.0, 300.0)
+        self.bass_low_sb.setSuffix(" Hz")
+        self.bass_high_sb = QtWidgets.QDoubleSpinBox()
+        self.bass_high_sb.setRange(60.0, 1000.0)
+        self.bass_high_sb.setSuffix(" Hz")
+        self.bass_weight_sb = QtWidgets.QDoubleSpinBox()
+        self.bass_weight_sb.setRange(0.1, 10.0)
+        self.bass_weight_sb.setSingleStep(0.5)
+        bass_inner.addRow("Bass Low:", self.bass_low_sb)
+        bass_inner.addRow("Bass High:", self.bass_high_sb)
+        bass_inner.addRow("Bass Weight:", self.bass_weight_sb)
+        controls_layout.addLayout(bass_inner)
+
+        # close button
         close_button = QtWidgets.QPushButton("Close")
         close_button.clicked.connect(self.close)
+        controls_layout.addStretch(1)
+        controls_layout.addWidget(close_button)
 
-        controls.addWidget(self.low_latency_cb)
-        controls.addWidget(self.bass_focus_cb)
-        controls.addWidget(self.bass_low_sb)
-        controls.addWidget(self.bass_high_sb)
-        controls.addWidget(self.bass_weight_sb)
-        controls.addStretch(1)
-        controls.addWidget(close_button)
-        header.addLayout(controls)
+        layout.addLayout(header)
+        # main content
+        main_h = QtWidgets.QHBoxLayout()
+        main_h.addWidget(controls_widget)
+        main_h.addWidget(self.timeline_widget, 1)
+        layout.addLayout(main_h)
+
         # callback to notify runtime
         self._on_settings_change = on_settings_change
         self._init_settings(initial_settings or {})
         # connect signals
         self.low_latency_cb.stateChanged.connect(self._emit_settings)
         self.bass_focus_cb.stateChanged.connect(self._emit_settings)
+        self.viterbi_cb.stateChanged.connect(self._emit_settings)
         self.bass_low_sb.valueChanged.connect(self._emit_settings)
         self.bass_high_sb.valueChanged.connect(self._emit_settings)
         self.bass_weight_sb.valueChanged.connect(self._emit_settings)
-        layout.addLayout(header)
-
-        layout.addWidget(self.timeline_widget)
 
     def update_view(self, segments: List[Segment]):
         self.timeline_widget.update_segments(segments)
@@ -164,6 +188,7 @@ class OverlayWindow(QtWidgets.QWidget):
         s = {
             "low_latency": bool(self.low_latency_cb.isChecked()),
             "bass_focus": bool(self.bass_focus_cb.isChecked()),
+            "use_viterbi": bool(self.viterbi_cb.isChecked()),
             "bass_low": float(self.bass_low_sb.value()),
             "bass_high": float(self.bass_high_sb.value()),
             "bass_weight": float(self.bass_weight_sb.value()),
@@ -174,13 +199,25 @@ class OverlayWindow(QtWidgets.QWidget):
             # swallow exceptions from callback to avoid crashing UI
             pass
 
+    def update_beats(self, beats: List[float]):
+        self.timeline_widget.beats = beats
+        self.timeline_widget.update()
 
-def run_overlay_app(fetch_segments, refresh_ms: int = 30, display_seconds: float = 60.0, on_settings_change=None, initial_settings=None):
+
+def run_overlay_app(fetch_segments, refresh_ms: int = 30, display_seconds: float = 60.0, on_settings_change=None, initial_settings=None, fetch_beats=None):
     app = QtWidgets.QApplication(sys.argv)
     window = OverlayWindow(display_seconds=display_seconds, on_settings_change=on_settings_change, initial_settings=initial_settings)
 
     timer = QtCore.QTimer()
-    timer.timeout.connect(lambda: window.update_view(fetch_segments()))
+    def _tick():
+        try:
+            window.update_view(fetch_segments())
+            if fetch_beats:
+                window.update_beats(fetch_beats())
+        except Exception:
+            pass
+
+    timer.timeout.connect(_tick)
     timer.start(refresh_ms)
 
     window.show()

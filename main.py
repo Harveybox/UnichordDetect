@@ -142,6 +142,7 @@ def run_app(
     signal.signal(signal.SIGTERM, lambda sig, frame: stop_all())
 
     fetch_segments = lambda: timeline.get_recent()
+    fetch_beats = lambda: estimator.get_onsets() if hasattr(estimator, 'get_onsets') else []
 
     # callback from UI when settings change
     def on_settings_change(settings: dict):
@@ -174,7 +175,9 @@ def run_app(
                 "bass_low": params.get("bass_low", 50.0),
                 "bass_high": params.get("bass_high", 350.0),
                 "bass_weight": params.get("bass_weight", 3.0),
+                "use_viterbi": params.get("use_viterbi", False),
             },
+            fetch_beats=fetch_beats,
         )
     finally:
         stop_all()
