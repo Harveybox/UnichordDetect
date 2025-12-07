@@ -19,14 +19,16 @@ class ChordEstimator:
         sample_rate: int,
         window_seconds: float = 1.5,
         hop_seconds: float = 0.1,
-        smoothing_frames: int = 5,
-        min_confirm_seconds: float = 0.4,
+        smoothing_frames: int = 7,
+        min_confirm_seconds: float = 0.8,
+        chroma_ema: float = 0.7,
     ):
         self.sample_rate = sample_rate
         self.window_size = int(window_seconds * sample_rate)
         self.hop_size = int(hop_seconds * sample_rate)
         self.smoothing_frames = smoothing_frames
         self.min_confirm_seconds = min_confirm_seconds
+        self.chroma_ema = chroma_ema
         self.buffer: Deque[NDArray[np.int16]] = deque()
         self.frame_queue: Deque[ChordEstimate] = deque(maxlen=smoothing_frames)
         self.lock = threading.Lock()
@@ -36,6 +38,7 @@ class ChordEstimator:
         self.on_estimate = None  # callback receiving ChordEstimate
         self._last_label = "N"
         self._last_change_time: Optional[float] = None
+        self._chroma_state: Optional[NDArray[np.float32]] = None
 
     @staticmethod
     def _build_templates() -> dict:
@@ -101,13 +104,24 @@ class ChordEstimator:
         freqs = np.fft.rfftfreq(len(mono), 1.0 / sr)
         chroma = np.zeros(12, dtype=np.float32)
         for mag, freq in zip(spectrum, freqs):
-            if freq < 50 or freq > 5000:
+            # discard very low or very high energy to avoid bass rumble / melody piercing through
+            if freq < 70 or freq > 2500:
                 continue
             pc = int(round(12 * np.log2(freq / 440.0) + 69)) % 12
             chroma[pc] += mag
         if chroma.sum() > 0:
             chroma /= chroma.sum()
-        return chroma
+        # exponential moving average to stabilize chroma against transient melodies
+        if self._chroma_state is None:
+            self._chroma_state = chroma
+        else:
+            self._chroma_state = (
+                self.chroma_ema * self._chroma_state + (1 - self.chroma_ema) * chroma
+            )
+        smoothed = self._chroma_state.copy()
+        if smoothed.sum() > 0:
+            smoothed /= smoothed.sum()
+        return smoothed
 
     def _match_chord(self, chroma: NDArray[np.float32]) -> Tuple[str, float]:
         best_label = "N"

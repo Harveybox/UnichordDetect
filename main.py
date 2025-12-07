@@ -12,10 +12,11 @@ from ui.overlay_ui import run_overlay_app
 
 DEFAULTS = {
     "sample_rate": 48000,
-    "window_seconds": 1.5,
-    "hop_seconds": 0.1,
-    "smoothing_frames": 5,
-    "min_confirm_seconds": 0.4,
+    "window_seconds": 2.0,  # wider window -> more harmonic context, less melody jitter
+    "hop_seconds": 0.2,
+    "smoothing_frames": 9,
+    "min_confirm_seconds": 1.0,
+    "chroma_ema": 0.75,
     "ui_display_seconds": 90.0,
     "timeline_max_seconds": 120.0,
 }
@@ -32,6 +33,7 @@ def run_app(device_index: int | None):
         hop_seconds=DEFAULTS["hop_seconds"],
         smoothing_frames=DEFAULTS["smoothing_frames"],
         min_confirm_seconds=DEFAULTS["min_confirm_seconds"],
+        chroma_ema=DEFAULTS["chroma_ema"],
     )
 
     stop_event = threading.Event()

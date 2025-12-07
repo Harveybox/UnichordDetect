@@ -65,7 +65,8 @@ class TimelineWidget(QtWidgets.QWidget):
 
 class OverlayWindow(QtWidgets.QWidget):
     def __init__(self, display_seconds: float = 60.0):
-        super().__init__(flags=QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
+        super().__init__()
+        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setWindowTitle("Chord Timeline")
         self.resize(900, 200)

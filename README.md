@@ -34,8 +34,14 @@
 > 本项目默认以 Python 源码方式运行；当前未提供预编译 `.exe`。如需单文件分发，可在 Windows 上使用 `pyinstaller --noconsole --onefile main.py` 自行打包（需已安装依赖和 VC++ 运行库）。
 
 ## 安装
+<<<<<<< ours
 1. 安装 Python 3.10+，并确保系统为 Windows 且启用 WASAPI Loopback。
 2. 安装依赖：
+=======
+1. 安装 Python 3.10+（建议 64-bit），并确保系统为 Windows 且启用 WASAPI Loopback。
+2. 安装 Microsoft Visual C++ 2015–2022 可再发行组件（x64），以满足 Qt 运行库依赖。
+3. 安装依赖：
+>>>>>>> theirs
    ```bash
    pip install -r requirements.txt
    ```
@@ -94,6 +100,12 @@
 6) **诊断日志与故障排查**：
    - 运行时若抛出 `No WASAPI loopback devices found`，请确认在 Windows 本机运行而非 WSL，并检查声卡设置。
    - 若提示 `pyaudiowpatch is required for WASAPI loopback`，请确保通过 `pip install pyaudiowpatch` 安装并在 Windows 环境运行。
+<<<<<<< ours
+=======
+   - 若启动时报 `ImportError: DLL load failed while importing QtCore`，通常是 32/64 位架构不匹配或缺少 VC++ 运行库：
+     - 使用 64-bit Python 并重新安装 PySide6：`pip install --force-reinstall PySide6==6.7.3`。
+     - 确认已安装 Microsoft Visual C++ 2015–2022 x64 运行库，若缺失请从微软官网下载安装。
+>>>>>>> theirs
    - 若 UI 卡顿，可降低 `DEFAULTS` 中 `ui_display_seconds` 或 `window_seconds`，并关闭其他占用 GPU 的窗口。
 
 ## 常见问题

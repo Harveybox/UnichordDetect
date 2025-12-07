@@ -6,9 +6,12 @@ from typing import Deque, List, Optional, Tuple
 import numpy as np
 
 try:
-    import pyaudio
-except ImportError:  # pragma: no cover - runtime dependency
-    pyaudio = None
+    import pyaudiowpatch as pyaudio  # preferred WASAPI build
+except ImportError:
+    try:
+        import pyaudio  # fallback if user installed plain PyAudio
+    except ImportError:  # pragma: no cover - runtime dependency
+        pyaudio = None
 
 
 class LoopbackDevice:
