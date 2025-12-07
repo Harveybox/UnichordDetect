@@ -2,6 +2,10 @@ name: Build Windows executable
 
 on:
   workflow_dispatch: {}
+  push:
+    branches:
+      - 'codex/**'
+      - 'main'
 
 jobs:
   build-windows:
