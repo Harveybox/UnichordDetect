@@ -2,6 +2,7 @@ import threading
 import time
 from collections import deque
 from typing import Deque, List, Optional, Tuple
+import os
 
 import numpy as np
 
@@ -64,7 +65,13 @@ class AudioRingBuffer:
 
 
 class LoopbackCapture:
-    def __init__(self, device_index: Optional[int] = None, target_sample_rate: int = 48000, ring_seconds: int = 5):
+    def __init__(
+        self,
+        device_index: Optional[int] = None,
+        target_sample_rate: int = 48000,
+        ring_seconds: int = 5,
+        allow_fallback: Optional[bool] = None,
+    ):
         if pyaudio is None:
             raise RuntimeError("pyaudiowpatch is required for WASAPI loopback")
         self.pa = pyaudio.PyAudio()
@@ -75,6 +82,11 @@ class LoopbackCapture:
         self.stream = None
         self.ring_buffer = AudioRingBuffer(max_frames=target_sample_rate * ring_seconds)
         self._stop = threading.Event()
+        # allow_fallback: explicit parameter preferred; if None, consult env var
+        if allow_fallback is None:
+            self.allow_fallback = os.environ.get("UNICHORD_FALLBACK_TO_INPUT", "0") == "1"
+        else:
+            self.allow_fallback = bool(allow_fallback)
 
     def list_loopback_devices(self) -> List[LoopbackDevice]:
         devices: List[LoopbackDevice] = []
@@ -112,6 +124,22 @@ class LoopbackCapture:
                 )
         devices = self.list_loopback_devices()
         if not devices:
+            # No loopback devices discovered. If allowed, fall back to the default
+            # input device (microphone) to permit testing in environments without
+            # WASAPI loopback (VMs, headless CI, etc.). Otherwise raise.
+            if self.allow_fallback:
+                try:
+                    # Try to use default input device
+                    info = self.pa.get_default_input_device_info()
+                    idx = int(info.get("index", 0)) if info.get("index") is not None else 0
+                    return LoopbackDevice(
+                        index=idx,
+                        name=info.get("name", "default-input"),
+                        sample_rate=info.get("defaultSampleRate", self.target_sample_rate),
+                        max_input_channels=info.get("maxInputChannels", 1),
+                    )
+                except Exception:
+                    raise RuntimeError("No WASAPI loopback devices found and default input fallback failed")
             raise RuntimeError("No WASAPI loopback devices found")
         return devices[0]
 

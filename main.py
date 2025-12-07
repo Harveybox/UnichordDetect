@@ -28,11 +28,12 @@ DEFAULTS = {
 }
 
 
-def run_app(device_index: int | None, engine: str, vamp_path: str | None):
+def run_app(device_index: int | None, engine: str, vamp_path: str | None, fallback_input: bool = False):
     capture = LoopbackCapture(
         device_index=device_index,
         target_sample_rate=DEFAULTS["sample_rate"],
         ring_seconds=DEFAULTS["ring_seconds"],
+        allow_fallback=fallback_input,
     )
     sample_rate, _channels = capture.start()
 
@@ -107,6 +108,11 @@ def list_devices():
 def main():
     parser = argparse.ArgumentParser(description="Universal chord recognition overlay")
     parser.add_argument("--device", type=int, default=None, help="WASAPI loopback device index")
+    parser.add_argument(
+        "--fallback-input",
+        action="store_true",
+        help="When no WASAPI loopback device is found, fall back to the default input device (for testing).",
+    )
     parser.add_argument("--list-devices", action="store_true", help="List loopback devices and exit")
     parser.add_argument(
         "--engine",
@@ -126,7 +132,7 @@ def main():
         list_devices()
         return
 
-    run_app(args.device, args.engine, args.vamp_path)
+    run_app(args.device, args.engine, args.vamp_path, fallback_input=args.fallback_input)
 
 
 if __name__ == "__main__":
