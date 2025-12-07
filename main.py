@@ -27,12 +27,28 @@ DEFAULTS = {
     "autochord_hop_seconds": 3.0,
 }
 
+LOW_LATENCY = {
+    "sample_rate": 48000,
+    "window_seconds": 0.4,  # smaller window for faster response (~200ms latency)
+    "hop_seconds": 0.05,  # faster analysis cycles (~50ms between decisions)
+    "smoothing_frames": 2,  # minimal smoothing, accept more jitter for speed
+    "min_confirm_seconds": 0.2,  # quick confirmation (200ms min hold time)
+    "chroma_ema": 0.7,  # slightly higher EMA for stability despite smaller window
+    "viterbi_switch_penalty": 0.0,  # keep Viterbi off
+    "ring_seconds": 5,  # smaller ring buffer (5s instead of 20s)
+    "ui_display_seconds": 90.0,
+    "timeline_max_seconds": 120.0,
+    "autochord_analysis_seconds": 12.0,
+    "autochord_hop_seconds": 3.0,
+}
 
-def run_app(device_index: int | None, engine: str, vamp_path: str | None, fallback_input: bool = False):
+
+def run_app(device_index: int | None, engine: str, vamp_path: str | None, fallback_input: bool = False, low_latency: bool = False):
+    params = LOW_LATENCY if low_latency else DEFAULTS
     capture = LoopbackCapture(
         device_index=device_index,
         target_sample_rate=DEFAULTS["sample_rate"],
-        ring_seconds=DEFAULTS["ring_seconds"],
+        ring_seconds=params["ring_seconds"],
         allow_fallback=fallback_input,
     )
     sample_rate, _channels = capture.start()
@@ -41,27 +57,27 @@ def run_app(device_index: int | None, engine: str, vamp_path: str | None, fallba
     if engine == "autochord":
         estimator = AutoChordStreamingEstimator(
             sample_rate=sample_rate,
-            analysis_seconds=DEFAULTS["autochord_analysis_seconds"],
-            hop_seconds=DEFAULTS["autochord_hop_seconds"],
+            analysis_seconds=params["autochord_analysis_seconds"],
+            hop_seconds=params["autochord_hop_seconds"],
             target_sr=44100,
         )
     elif engine == "chordino":
         estimator = ChordinoStreamingEstimator(
             sample_rate=sample_rate,
-            analysis_seconds=DEFAULTS["autochord_analysis_seconds"],
-            hop_seconds=DEFAULTS["autochord_hop_seconds"],
+            analysis_seconds=params["autochord_analysis_seconds"],
+            hop_seconds=params["autochord_hop_seconds"],
             target_sr=44100,
             vamp_path=vamp_path,
         )
     else:
         estimator = ChordEstimator(
             sample_rate=sample_rate,
-            window_seconds=DEFAULTS["window_seconds"],
-            hop_seconds=DEFAULTS["hop_seconds"],
-            smoothing_frames=DEFAULTS["smoothing_frames"],
-            min_confirm_seconds=DEFAULTS["min_confirm_seconds"],
-            chroma_ema=DEFAULTS["chroma_ema"],
-            viterbi_switch_penalty=DEFAULTS["viterbi_switch_penalty"],
+            window_seconds=params["window_seconds"],
+            hop_seconds=params["hop_seconds"],
+            smoothing_frames=params["smoothing_frames"],
+            min_confirm_seconds=params["min_confirm_seconds"],
+            chroma_ema=params["chroma_ema"],
+            viterbi_switch_penalty=params["viterbi_switch_penalty"],
             min_chroma_energy=1e-5,
             low_freq_boost=3.0,
             hi_freq_cutoff=1200.0,
@@ -126,13 +142,18 @@ def main():
         default=None,
         help="Path to VAMP plugins (set if using chordino engine)",
     )
+    parser.add_argument(
+        "--low-latency",
+        action="store_true",
+        help="Use low-latency mode (target <0.5s latency, trade off some accuracy)",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
         list_devices()
         return
 
-    run_app(args.device, args.engine, args.vamp_path, fallback_input=args.fallback_input)
+    run_app(args.device, args.engine, args.vamp_path, fallback_input=args.fallback_input, low_latency=args.low_latency)
 
 
 if __name__ == "__main__":
