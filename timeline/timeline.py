@@ -1,6 +1,7 @@
 import threading
 from dataclasses import dataclass
 from typing import List
+from collections import deque
 
 
 @dataclass
@@ -13,7 +14,8 @@ class Segment:
 
 class Timeline:
     def __init__(self, max_duration: float = 120.0):
-        self.segments: List[Segment] = []
+        # use deque for efficient popleft when trimming old segments
+        self.segments: deque[Segment] = deque()
         self.max_duration = max_duration
         self.lock = threading.Lock()
 
@@ -32,12 +34,14 @@ class Timeline:
 
     def _trim(self, now: float) -> None:
         cutoff = now - self.max_duration
+        # efficiently pop from left while segments are older than cutoff
         while self.segments and self.segments[0].end < cutoff:
-            self.segments.pop(0)
+            self.segments.popleft()
 
     def get_recent(self) -> List[Segment]:
         with self.lock:
-            return [Segment(s.start, s.end, s.label, s.confidence) for s in self.segments]
+            # return a shallow copy as list for UI consumption
+            return [Segment(s.start, s.end, s.label, s.confidence) for s in list(self.segments)]
 
 
 __all__ = ["Timeline", "Segment"]
