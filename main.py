@@ -25,6 +25,10 @@ DEFAULTS = {
     "timeline_max_seconds": 120.0,
     "autochord_analysis_seconds": 12.0,
     "autochord_hop_seconds": 3.0,
+    "bass_focus": False,
+    "bass_low": 50.0,
+    "bass_high": 350.0,
+    "bass_weight": 3.0,
 }
 
 LOW_LATENCY = {
@@ -40,20 +44,47 @@ LOW_LATENCY = {
     "timeline_max_seconds": 120.0,
     "autochord_analysis_seconds": 12.0,
     "autochord_hop_seconds": 3.0,
+    "bass_focus": True,
+    "bass_low": 50.0,
+    "bass_high": 350.0,
+    "bass_weight": 3.0,
 }
 
 
-def run_app(device_index: int | None, engine: str, vamp_path: str | None, fallback_input: bool = False, low_latency: bool = False):
+def run_app(
+    device_index: int | None,
+    engine: str,
+    vamp_path: str | None,
+    fallback_input: bool = False,
+    low_latency: bool = False,
+    bass_focus: bool = False,
+    bass_low: float | None = None,
+    bass_high: float | None = None,
+    bass_weight: float | None = None,
+):
     params = LOW_LATENCY if low_latency else DEFAULTS
+    # apply CLI overrides for bass options if provided
+    if bass_focus:
+        params = dict(params)  # shallow copy
+        params["bass_focus"] = True
+    if bass_low is not None:
+        params = dict(params)
+        params["bass_low"] = bass_low
+    if bass_high is not None:
+        params = dict(params)
+        params["bass_high"] = bass_high
+    if bass_weight is not None:
+        params = dict(params)
+        params["bass_weight"] = bass_weight
     capture = LoopbackCapture(
         device_index=device_index,
-        target_sample_rate=DEFAULTS["sample_rate"],
+        target_sample_rate=params["sample_rate"],
         ring_seconds=params["ring_seconds"],
         allow_fallback=fallback_input,
     )
     sample_rate, _channels = capture.start()
 
-    timeline = Timeline(max_duration=DEFAULTS["timeline_max_seconds"])
+    timeline = Timeline(max_duration=params["timeline_max_seconds"])
     if engine == "autochord":
         estimator = AutoChordStreamingEstimator(
             sample_rate=sample_rate,
@@ -82,6 +113,10 @@ def run_app(device_index: int | None, engine: str, vamp_path: str | None, fallba
             low_freq_boost=3.0,
             hi_freq_cutoff=1200.0,
             high_freq_attenuation=0.25,
+            bass_focus=params.get("bass_focus", False),
+            bass_low=params.get("bass_low", 50.0),
+            bass_high=params.get("bass_high", 350.0),
+            bass_weight=params.get("bass_weight", 3.0),
             use_viterbi=False,
         )
 
@@ -107,8 +142,40 @@ def run_app(device_index: int | None, engine: str, vamp_path: str | None, fallba
     signal.signal(signal.SIGTERM, lambda sig, frame: stop_all())
 
     fetch_segments = lambda: timeline.get_recent()
+
+    # callback from UI when settings change
+    def on_settings_change(settings: dict):
+        # settings may include low_latency and bass focus; map to estimator update
+        try:
+            # if low_latency toggled, pick base preset
+            if "low_latency" in settings:
+                preset = LOW_LATENCY if settings.get("low_latency") else DEFAULTS
+                # copy bass settings from UI into preset
+                preset = dict(preset)
+                preset["bass_focus"] = settings.get("bass_focus", preset.get("bass_focus", False))
+                preset["bass_low"] = settings.get("bass_low", preset.get("bass_low", 50.0))
+                preset["bass_high"] = settings.get("bass_high", preset.get("bass_high", 350.0))
+                preset["bass_weight"] = settings.get("bass_weight", preset.get("bass_weight", 3.0))
+                estimator.update_params(preset)
+            else:
+                # only bass parameters changed
+                estimator.update_params(settings)
+        except Exception:
+            pass
+
     try:
-        run_overlay_app(fetch_segments, display_seconds=DEFAULTS["ui_display_seconds"])
+        run_overlay_app(
+            fetch_segments,
+            display_seconds=params["ui_display_seconds"],
+            on_settings_change=on_settings_change,
+            initial_settings={
+                "low_latency": True if low_latency else False,
+                "bass_focus": params.get("bass_focus", False),
+                "bass_low": params.get("bass_low", 50.0),
+                "bass_high": params.get("bass_high", 350.0),
+                "bass_weight": params.get("bass_weight", 3.0),
+            },
+        )
     finally:
         stop_all()
 
@@ -147,13 +214,36 @@ def main():
         action="store_true",
         help="Use low-latency mode (target <0.5s latency, trade off some accuracy)",
     )
+    parser.add_argument(
+        "--bass-focus",
+        action="store_true",
+        help="Enable bass-focus mode: emphasize low-frequency band for chord detection",
+    )
+    parser.add_argument("--bass-low", type=float, default=None, help="Bass low cutoff (Hz)")
+    parser.add_argument("--bass-high", type=float, default=None, help="Bass high cutoff (Hz)")
+    parser.add_argument("--bass-weight", type=float, default=None, help="Weight multiplier for bass band")
     args = parser.parse_args()
 
     if args.list_devices:
         list_devices()
         return
 
-    run_app(args.device, args.engine, args.vamp_path, fallback_input=args.fallback_input, low_latency=args.low_latency)
+    # override params from CLI if provided
+    # pass bass options through to run_app via flags; run_app will read params presets
+    # apply CLI overrides into selected params dict inside run_app by passing low_latency and bass flags
+    # for simplicity, forward values as arguments
+    # run
+    run_app(
+        args.device,
+        args.engine,
+        args.vamp_path,
+        fallback_input=args.fallback_input,
+        low_latency=args.low_latency,
+        bass_focus=args.bass_focus,
+        bass_low=args.bass_low,
+        bass_high=args.bass_high,
+        bass_weight=args.bass_weight,
+    )
 
 
 if __name__ == "__main__":

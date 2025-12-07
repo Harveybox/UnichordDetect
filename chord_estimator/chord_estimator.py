@@ -29,6 +29,11 @@ class ChordEstimator:
         silence_rms: float = 1e-3,
         use_viterbi: bool = False,
         high_freq_attenuation: float = 0.3,
+        # Bass-focus mode: emphasize frequencies in bass band and suppress higher melodic bands
+        bass_focus: bool = False,
+        bass_low: float = 50.0,
+        bass_high: float = 350.0,
+        bass_weight: float = 3.0,
     ):
         self.sample_rate = sample_rate
         self.window_size = int(window_seconds * sample_rate)
@@ -43,6 +48,10 @@ class ChordEstimator:
         self.silence_rms = silence_rms
         self.use_viterbi = use_viterbi
         self.high_freq_attenuation = high_freq_attenuation
+        self.bass_focus = bass_focus
+        self.bass_low = bass_low
+        self.bass_high = bass_high
+        self.bass_weight = bass_weight
         self.buffer: Deque[NDArray[np.int16]] = deque()
         self.frame_queue: Deque[ChordEstimate] = deque(maxlen=smoothing_frames)
         self.lock = threading.Lock()
@@ -128,18 +137,32 @@ class ChordEstimator:
         spectrum = np.abs(np.fft.rfft(mono * window))
         freqs = np.fft.rfftfreq(len(mono), 1.0 / sr)
         chroma = np.zeros(12, dtype=np.float32)
+        # Iterate frequency bins and map to chroma with optional bass-focus weighting
         for mag, freq in zip(spectrum, freqs):
             # discard very low or very high energy to avoid bass rumble / ultrahigh hiss
-            if freq < 50 or freq > self.hi_freq_cutoff:
+            if freq < 20 or freq > self.hi_freq_cutoff:
                 continue
             pc = int(round(12 * np.log2(freq / 440.0) + 69)) % 12
-            # emphasize low-mid (bass instruments) to reduce vocal dominance
-            if freq < 350:
-                weight = self.low_freq_boost
-            elif freq > 800:
-                weight = self.high_freq_attenuation
+            # default weight behavior
+            weight = 1.0
+            # if bass_focus mode is enabled, strongly emphasize bass band and suppress higher bands
+            if self.bass_focus:
+                if freq < self.bass_low:
+                    # ignore subsonic / extreme rumble
+                    continue
+                if freq <= self.bass_high:
+                    weight = self.bass_weight
+                else:
+                    # attenuate bands above bass_high to reduce melody/vocal influence
+                    weight = 0.1
             else:
-                weight = 1.0
+                # legacy behavior: modest low-mid boost and high-frequency attenuation
+                if freq < 350:
+                    weight = self.low_freq_boost
+                elif freq > 800:
+                    weight = self.high_freq_attenuation
+                else:
+                    weight = 1.0
             chroma[pc] += mag * weight
         if chroma.sum() > 0:
             chroma /= chroma.sum()
@@ -192,6 +215,35 @@ class ChordEstimator:
         self._viterbi_prev = None
         self._last_label = "N"
         self._last_change_time = None
+
+    def update_params(self, params: dict) -> None:
+        """Update estimator parameters at runtime. Accepts a dict with keys
+        like 'window_seconds', 'hop_seconds', 'smoothing_frames',
+        'min_confirm_seconds', 'chroma_ema', and bass focus settings.
+        This is thread-safe and will affect subsequent processing.
+        """
+        with self.lock:
+            if "window_seconds" in params:
+                self.window_size = int(params["window_seconds"] * self.sample_rate)
+            if "hop_seconds" in params:
+                self.hop_size = int(params["hop_seconds"] * self.sample_rate)
+            if "smoothing_frames" in params:
+                self.smoothing_frames = int(params["smoothing_frames"])
+                # resize frame_queue maxlen
+                self.frame_queue = deque(self.frame_queue, maxlen=self.smoothing_frames)
+            if "min_confirm_seconds" in params:
+                self.min_confirm_seconds = float(params["min_confirm_seconds"])
+            if "chroma_ema" in params:
+                self.chroma_ema = float(params["chroma_ema"])
+            # bass-focus related
+            if "bass_focus" in params:
+                self.bass_focus = bool(params["bass_focus"])
+            if "bass_low" in params:
+                self.bass_low = float(params["bass_low"])
+            if "bass_high" in params:
+                self.bass_high = float(params["bass_high"])
+            if "bass_weight" in params:
+                self.bass_weight = float(params["bass_weight"])
 
     def _smooth(self, label: str, timestamp: float) -> str:
         self.frame_queue.append(label)
