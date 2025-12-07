@@ -4,6 +4,7 @@ from typing import Deque, List, Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
+import math
 
 
 class ChordEstimate:
@@ -64,6 +65,12 @@ class ChordEstimator:
         self._last_change_time: Optional[float] = None
         self._chroma_state: Optional[NDArray[np.float32]] = None
         self._viterbi_prev: Optional[NDArray[np.float32]] = None
+        # onset / beat tracking for beat-synchronous gating
+        self._onset_env_prev: Optional[NDArray[np.float32]] = None
+        self._onset_times = deque(maxlen=32)
+        self._beat_interval: Optional[float] = None
+        # precompute transition log matrix for improved Viterbi
+        self._trans_log = self._build_transition_log()
 
     @staticmethod
     def _build_templates() -> Tuple[dict, List[str]]:
@@ -83,6 +90,45 @@ class ChordEstimator:
         templates["N"] = np.zeros(12)
         states = list(templates.keys())
         return templates, states
+
+    def _build_transition_log(self) -> NDArray[np.float32]:
+        # build a simple transition log-probability matrix based on musical proximity
+        n = len(self.states)
+        trans = np.full((n, n), -10.0, dtype=np.float32)  # log-prob (very unlikely)
+        # allow staying in same state (high prob)
+        for i in range(n):
+            trans[i, i] = math.log(0.9)
+        # allow transitions between related chords (root same or fifth/relative)
+        name_to_root = {}
+        for i, s in enumerate(self.states):
+            if s == "N":
+                name_to_root[i] = None
+                continue
+            root = s.split(":")[0]
+            root_idx = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"].index(root)
+            name_to_root[i] = root_idx
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                ri = name_to_root.get(i)
+                rj = name_to_root.get(j)
+                if ri is None or rj is None:
+                    # transitions to/from N have moderate penalty
+                    trans[i, j] = math.log(0.02)
+                else:
+                    interval = (rj - ri) % 12
+                    if interval in (0,):
+                        trans[i, j] = math.log(0.3)
+                    elif interval in (7, 5):
+                        # fifth/fourth
+                        trans[i, j] = math.log(0.2)
+                    elif interval in (3,4):
+                        # relative minor/major
+                        trans[i, j] = math.log(0.15)
+                    else:
+                        trans[i, j] = math.log(0.01)
+        return trans
 
     def start(self, ring_buffer, time_provider) -> None:
         self._stop.clear()
@@ -123,8 +169,13 @@ class ChordEstimator:
                     current = current[hop:]
                     continue
 
+                # compute chroma and also track onset / beat info and bass energy
                 chroma = self._compute_chroma_from_mono(mono, self.sample_rate)
-                label, confidence = self._match_chord(chroma)
+                # update onset env and beat tracker
+                self._update_onset_and_beat(mono, self.sample_rate, time_provider())
+                # attempt bass root extraction
+                bass_root, bass_conf = self._extract_bass_root(mono, self.sample_rate)
+                label, confidence = self._match_chord(chroma, bass_root=bass_root, bass_conf=bass_conf)
                 timestamp = time_provider()
                 smoothed_label = self._smooth(label, timestamp)
                 estimate = ChordEstimate(smoothed_label, confidence, timestamp)
@@ -178,7 +229,53 @@ class ChordEstimator:
             smoothed /= smoothed.sum()
         return smoothed
 
-    def _match_chord(self, chroma: NDArray[np.float32]) -> Tuple[str, float]:
+    def _update_onset_and_beat(self, mono: NDArray[np.float32], sr: int, now: float) -> None:
+        # quick spectral flux onset detector
+        window = np.hanning(len(mono))
+        spec = np.abs(np.fft.rfft(mono * window))
+        if self._onset_env_prev is None:
+            self._onset_env_prev = spec
+            return
+        flux = np.sum(np.maximum(spec - self._onset_env_prev, 0.0))
+        self._onset_env_prev = spec
+        # simple adaptive threshold
+        thresh = 0.0005 * len(spec)
+        if flux > thresh:
+            # record onset time
+            self._onset_times.append(now)
+            if len(self._onset_times) >= 4:
+                # compute median interval
+                intervals = np.diff(np.array(self._onset_times))
+                med = float(np.median(intervals)) if len(intervals) > 0 else None
+                if med and 0.2 < med < 2.5:
+                    self._beat_interval = med
+
+    def _extract_bass_root(self, mono: NDArray[np.float32], sr: int) -> Tuple[Optional[int], float]:
+        # find strongest spectral peak in bass band and convert to pitch-class
+        n = len(mono)
+        window = np.hanning(n)
+        spec = np.abs(np.fft.rfft(mono * window))
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+        # mask bass band
+        mask = (freqs >= max(20.0, self.bass_low)) & (freqs <= min(self.bass_high, self.hi_freq_cutoff))
+        if not np.any(mask):
+            return None, 0.0
+        band = spec[mask]
+        if band.sum() <= 0:
+            return None, 0.0
+        idx = int(np.argmax(band))
+        freq_vals = freqs[mask]
+        peak_freq = float(freq_vals[idx])
+        # convert to midi note
+        try:
+            midi = 69 + 12 * math.log2(peak_freq / 440.0)
+        except Exception:
+            return None, 0.0
+        pc = int(round(midi)) % 12
+        conf = float(band[idx] / (band.sum() + 1e-9))
+        return pc, conf
+
+    def _match_chord(self, chroma: NDArray[np.float32], bass_root: Optional[int] = None, bass_conf: float = 0.0) -> Tuple[str, float]:
         scores = np.array([float(np.dot(chroma, self.templates[s])) for s in self.states], dtype=np.float32)
         energy = scores.sum()
         if energy < self.min_chroma_energy:
@@ -187,17 +284,26 @@ class ChordEstimator:
         scores = np.maximum(scores, 1e-6)
         emission = scores / scores.sum()
 
+        # apply bass-root fusion: boost emission of candidates matching bass root
+        if bass_root is not None and bass_conf > 0.02:
+            for i, s in enumerate(self.states):
+                if s == "N":
+                    continue
+                root = s.split(":")[0]
+                root_idx = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"].index(root)
+                if root_idx == bass_root:
+                    emission[i] *= (1.0 + self.bass_weight * bass_conf)
+            emission = emission / emission.sum()
+
         if self.use_viterbi:
-            # Viterbi smoothing: prefer staying in the same chord unless evidence is strong
+            # improved Viterbi with precomputed transition log probabilities
+            log_e = np.log(emission)
             if self._viterbi_prev is None:
-                v_prev = np.log(emission)
+                v_prev = log_e
             else:
-                # slight decay to avoid hard lock into one state
-                stay_scores = self._viterbi_prev - 0.05  # decay over time
-                switch_best = np.max(self._viterbi_prev) - self.viterbi_switch_penalty
-                # combine stay vs switch
-                combined = np.maximum(stay_scores, switch_best)
-                v_prev = combined + np.log(emission)
+                # v_new[j] = log_e[j] + max_i (v_prev[i] + trans_log[i,j])
+                scores_mat = (self._viterbi_prev[:, None] + self._trans_log)
+                v_prev = log_e + np.max(scores_mat, axis=0)
             self._viterbi_prev = v_prev
             best_idx = int(np.argmax(v_prev))
         else:
