@@ -66,7 +66,7 @@ class ChordEstimator:
             self._thread.join()
 
     def _worker(self, ring_buffer, time_provider) -> None:
-        current = np.zeros((0, 2), dtype=np.int16)
+        current: NDArray[np.int16] | None = None
         hop = self.hop_size
         while not self._stop.is_set():
             needed = hop
@@ -74,8 +74,15 @@ class ChordEstimator:
             if chunk is None:
                 threading.Event().wait(0.01)
                 continue
-            current = np.vstack([current, chunk])
-            while len(current) >= self.window_size:
+            if current is None:
+                current = chunk
+            else:
+                if current.shape[1] != chunk.shape[1]:
+                    current = chunk
+                else:
+                    current = np.vstack([current, chunk])
+
+            while current is not None and len(current) >= self.window_size:
                 window = current[-self.window_size :]
                 chroma = self._compute_chroma(window, self.sample_rate)
                 label, confidence = self._match_chord(chroma)
