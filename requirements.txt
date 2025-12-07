@@ -1,5 +1,4 @@
-pyaudiowpatch
+PyAudio
 numpy
-PySide6==6.7.3
-# AutoChord/Chordino 引擎的可选依赖请参见 AUTOCHORD.md（vamp/librosa/soundfile 等）
+PySide6==6.7
 

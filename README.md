@@ -34,19 +34,15 @@
 > 本项目默认以 Python 源码方式运行；当前未提供预编译 `.exe`。如需单文件分发，可在 Windows 上使用 `pyinstaller --noconsole --onefile main.py` 自行打包（需已安装依赖和 VC++ 运行库）。
 
 ## 安装
-<<<<<<< ours
-1. 安装 Python 3.10+，并确保系统为 Windows 且启用 WASAPI Loopback。
-2. 安装依赖：
-=======
-1. 安装 Python 3.10+（建议 64-bit），并确保系统为 Windows 且启用 WASAPI Loopback。
-2. 安装 Microsoft Visual C++ 2015–2022 可再发行组件（x64），以满足 Qt 运行库依赖。
+
+1. 安装 Python 3.10+（建议 64-bit）。
+2. Windows 平台额外建议安装 Microsoft Visual C++ 2015–2022 可再发行组件（x64），以满足 Qt 运行库依赖。
 3. 安装依赖：
->>>>>>> theirs
    ```bash
    pip install -r requirements.txt
    ```
 
-> 若未安装 PySide6，可单独 `pip install PySide6`。
+若未安装 PySide6，可单独 `pip install PySide6`。
 
 ## 运行
 - 列出可用 loopback 设备：
@@ -75,6 +71,15 @@
 ## Release 打包与下载
 - 版本号存放于 `VERSION`；执行 `python scripts/make_release.py` 会在本地 `dist/` 生成 `UnichordDetect-<version>.zip`，包含源码、依赖清单与说明文件，可直接分发/下载。
 - 仓库不收录任何压缩包/二进制产物（`dist/` 已被忽略）；如需分发请自行运行脚本生成并上传 CI 产物或 Release 附件。打包结果中包含 `README.md` 与 `RELEASE.md` 方便终端用户安装运行。
+
+### 在 GitHub Actions 上自动构建 Windows 可执行文件
+
+本仓库包含一个用于在 Windows runner 上使用 PyInstaller 打包的工作流：`.github/workflows/build_windows.yml`。
+
+- 触发方式：在仓库的 Actions -> Build Windows executable -> Run workflow（workflow_dispatch）。
+- 产物：构建成功后会把 `dist/` 目录上传为工作流 artifact（名称 `UnichordDetect-windows`），可在 workflow 运行完成后下载可执行文件。
+
+注意：首次构建可能需要针对 PySide6/依赖做调整；若在 CI 中出现缺失的动态库或插件，请把构建日志贴给我，我会帮助调整 `pyinstaller` 参数（例如 `--add-data` 指定 Qt platform plugins 的路径）。
 
 ## 手工测试与诊断流程
 以下步骤可覆盖音频采集、识别平滑、时间轴与 UI 全链路，并帮助定位常见问题：
@@ -107,13 +112,10 @@
 
 6) **诊断日志与故障排查**：
    - 运行时若抛出 `No WASAPI loopback devices found`，请确认在 Windows 本机运行而非 WSL，并检查声卡设置。
-   - 若提示 `pyaudiowpatch is required for WASAPI loopback`，请确保通过 `pip install pyaudiowpatch` 安装并在 Windows 环境运行。
-<<<<<<< ours
-=======
-   - 若启动时报 `ImportError: DLL load failed while importing QtCore`，通常是 32/64 位架构不匹配或缺少 VC++ 运行库：
-     - 使用 64-bit Python 并重新安装 PySide6：`pip install --force-reinstall PySide6==6.7.3`。
-     - 确认已安装 Microsoft Visual C++ 2015–2022 x64 运行库，若缺失请从微软官网下载安装。
->>>>>>> theirs
+    - 若提示 `pyaudiowpatch is required for WASAPI loopback`，请确保通过 `pip install pyaudiowpatch` 安装并在 Windows 环境运行。
+    - 若启动时报 `ImportError: DLL load failed while importing QtCore`，通常是 32/64 位架构不匹配或缺少 VC++ 运行库：
+       - 使用 64-bit Python 并重新安装 PySide6：`pip install --force-reinstall PySide6==6.7.3`。
+       - 确认已安装 Microsoft Visual C++ 2015–2022 x64 运行库，若缺失请从微软官网下载安装。
    - 若 UI 卡顿，可降低 `DEFAULTS` 中 `ui_display_seconds` 或 `window_seconds`，并关闭其他占用 GPU 的窗口。
 
 ## 常见问题
