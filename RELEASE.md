@@ -4,8 +4,9 @@
 - 当前版本：`0.1.0`
 - 版本号存于根目录 `VERSION`；更新版本时请同步修改。
 
-## 如何生成 Release 压缩包
-在 Windows 或任意支持 Python 3.10+ 的环境下执行：
+## 如何获取/生成 Release 压缩包
+- **从 GitHub 下载**：在仓库页面使用 **Code → Download ZIP**，或从 Release 附件直接下载 `UnichordDetect-<version>.zip`。
+- **本地生成**：在 Windows 或任意支持 Python 3.10+ 的环境下执行：
 ```bash
 python scripts/make_release.py
 ```
@@ -14,6 +15,8 @@ python scripts/make_release.py
 - 说明：`README.md`, `RELEASE.md`, `VERSION`, `requirements.txt`
 
 > 仓库不收录任何压缩包/二进制；若要在 CI 构建，请运行脚本并上传 `dist/UnichordDetect-<version>.zip` 作为流水线产物或 Release 附件。
+
+> 默认以源码/zip 分发，暂未内置 `.exe`。如需单文件可执行，请在 Windows 上安装依赖后使用 `pyinstaller --noconsole --onefile main.py` 自行打包。
 
 ## 下载/解压与运行
 1. 解压 zip 至任意路径，例如 `C:\UnichordDetect`。

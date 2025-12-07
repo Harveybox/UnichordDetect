@@ -21,6 +21,18 @@
 - 平滑：5 帧多数投票 + 0.4 s 最短持续时间阈值
 - UI 显示窗口：90 s（时间轴保留 120 s 便于裁剪）
 
+## 获取代码（GitHub 下载方式）
+- 方式 A：克隆仓库（保持更新方便）
+  ```bash
+  git clone <repo_url> UnichordDetect
+  cd UnichordDetect
+  ```
+- 方式 B：GitHub “Download ZIP”/Release 压缩包
+  - 在 GitHub 页面点击 **Code → Download ZIP**，或从 Release 附件下载 `UnichordDetect-<version>.zip`。
+  - 将压缩包解压到本地目录（如 `C:\UnichordDetect`），然后在该目录打开终端。
+
+> 本项目默认以 Python 源码方式运行；当前未提供预编译 `.exe`。如需单文件分发，可在 Windows 上使用 `pyinstaller --noconsole --onefile main.py` 自行打包（需已安装依赖和 VC++ 运行库）。
+
 ## 安装
 1. 安装 Python 3.10+，并确保系统为 Windows 且启用 WASAPI Loopback。
 2. 安装依赖：
