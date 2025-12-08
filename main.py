@@ -35,16 +35,16 @@ LOW_LATENCY = {
     "sample_rate": 48000,
     "window_seconds": 0.4,  # smaller window for faster response (~200ms latency)
     "hop_seconds": 0.05,  # faster analysis cycles (~50ms between decisions)
-    "smoothing_frames": 2,  # minimal smoothing, accept more jitter for speed
-    "min_confirm_seconds": 0.2,  # quick confirmation (200ms min hold time)
-    "chroma_ema": 0.7,  # slightly higher EMA for stability despite smaller window
+    "smoothing_frames": 3,  # slight smoothing to avoid flicker while staying responsive
+    "min_confirm_seconds": 0.35,  # 350ms confirmation
+    "chroma_ema": 0.6,  # moderate EMA for stability
     "viterbi_switch_penalty": 0.0,  # keep Viterbi off
     "ring_seconds": 5,  # smaller ring buffer (5s instead of 20s)
     "ui_display_seconds": 90.0,
     "timeline_max_seconds": 120.0,
     "autochord_analysis_seconds": 12.0,
     "autochord_hop_seconds": 3.0,
-    "bass_focus": True,
+    "bass_focus": False,  # disable bass_focus by default to capture full spectrum
     "bass_low": 50.0,
     "bass_high": 350.0,
     "bass_weight": 3.0,
@@ -110,15 +110,16 @@ def run_app(
             min_confirm_seconds=params["min_confirm_seconds"],
             chroma_ema=params["chroma_ema"],
             viterbi_switch_penalty=params["viterbi_switch_penalty"],
-            min_chroma_energy=1e-5,
-            low_freq_boost=3.0,
-            hi_freq_cutoff=1200.0,
-            high_freq_attenuation=0.25,
+            min_chroma_energy=1e-6,
+            low_freq_boost=2.5,
+            hi_freq_cutoff=3000.0,
+            high_freq_attenuation=0.4,
             bass_focus=params.get("bass_focus", False),
             bass_low=params.get("bass_low", 50.0),
             bass_high=params.get("bass_high", 350.0),
             bass_weight=params.get("bass_weight", 3.0),
             use_viterbi=False,
+                    silence_rms=5e-4,
         )
 
     stop_event = threading.Event()
