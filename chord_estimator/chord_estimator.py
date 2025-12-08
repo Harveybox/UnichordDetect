@@ -97,42 +97,70 @@ class ChordEstimator:
         return templates, states
 
     def _build_transition_log(self) -> NDArray[np.float32]:
-        # build a simple transition log-probability matrix based on musical proximity
+        # build transition log-probability matrix based on music theory and common progressions
         n = len(self.states)
-        trans = np.full((n, n), -10.0, dtype=np.float32)  # log-prob (very unlikely)
-        # allow staying in same state (high prob)
+        trans = np.full((n, n), -20.0, dtype=np.float32)  # very unlikely by default
+        # allow staying in same state (high prob, avoid flutter)
         for i in range(n):
-            trans[i, i] = math.log(0.9)
-        # allow transitions between related chords (root same or fifth/relative)
-        name_to_root = {}
+            trans[i, i] = math.log(0.7)  # boost stay probability to reduce flicker
+        
+        # musical knowledge: map chord roots and qualities
+        chord_info = {}
         for i, s in enumerate(self.states):
             if s == "N":
-                name_to_root[i] = None
+                chord_info[i] = (None, None)  # silence
                 continue
-            root = s.split(":")[0]
+            parts = s.split(":")
+            root = parts[0]
+            quality = parts[1] if len(parts) > 1 else "maj"
             root_idx = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"].index(root)
-            name_to_root[i] = root_idx
+            chord_info[i] = (root_idx, quality)
+        
         for i in range(n):
             for j in range(n):
                 if i == j:
                     continue
-                ri = name_to_root.get(i)
-                rj = name_to_root.get(j)
+                ri, qi = chord_info.get(i, (None, None))
+                rj, qj = chord_info.get(j, (None, None))
+                
+                # transitions to/from silence
                 if ri is None or rj is None:
-                    # transitions to/from N have moderate penalty
-                    trans[i, j] = math.log(0.02)
+                    trans[i, j] = math.log(0.05)
+                    continue
+                
+                # interval in semitones (mod 12)
+                interval = (rj - ri) % 12
+                # common progressions: V->I, IV->I, IV->V, vi->IV, etc.
+                # Likelihood boosted for musically "good" progressions
+                
+                prob = 0.01  # default very low
+                
+                # same root, different quality (major <-> minor)
+                if interval == 0:
+                    # prefer staying in same quality, but allow flip
+                    prob = 0.2 if qi == qj else 0.08
+                # strong resolutions (fifth)
+                elif interval in (5, 7):  # V->I, IV->I dominant area
+                    prob = 0.15 if qj == "maj" else 0.08
+                # subdominant moves (whole step, major third, minor sixth)
+                elif interval in (2, 4, 9):
+                    prob = 0.10
+                # chromatic/semitone moves
+                elif interval == 1 or interval == 11:
+                    prob = 0.04
+                # tritone
+                elif interval == 6:
+                    prob = 0.03
+                # other intervals
                 else:
-                    interval = (rj - ri) % 12
-                    if interval in (0,):
-                        trans[i, j] = math.log(0.3)
-                    elif interval in (7, 5):
-                        # fifth/fourth
-                        trans[i, j] = math.log(0.2)
-                    elif interval in (3,4):
-                        # relative minor/major
-                        trans[i, j] = math.log(0.15)
-                    else:
-                        trans[i, j] = math.log(0.01)
+                    prob = 0.02
+                
+                # boost major-to-major progressions (more stable)
+                if qi == "maj" and qj == "maj" and interval in (5, 7, 0, 2, 4):
+                    prob *= 1.5
+                
+                trans[i, j] = math.log(max(prob, 1e-6))
+        
         return trans
 
     def start(self, ring_buffer, time_provider) -> None:
