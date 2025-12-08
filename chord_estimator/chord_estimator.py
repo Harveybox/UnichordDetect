@@ -72,6 +72,8 @@ class ChordEstimator:
         self._onset_env_prev: Optional[NDArray[np.float32]] = None
         self._onset_times = deque(maxlen=32)
         self._beat_interval: Optional[float] = None
+        # track low-frequency changes for downbeat/measure detection
+        self._downbeat_env_prev: Optional[np.float32] = None
         # precompute transition log matrix for improved Viterbi
         self._trans_log = self._build_transition_log()
 
@@ -180,6 +182,8 @@ class ChordEstimator:
                 chroma = self._compute_chroma_from_mono(mono, self.sample_rate)
                 # update onset env and beat tracker (use real time epoch for UI)
                 self._update_onset_and_beat(mono, self.sample_rate, time.time())
+                # detect downbeats for measure-line visualization
+                self._detect_downbeat(mono, self.sample_rate, time.time())
                 # attempt bass root extraction
                 bass_root, bass_conf = self._extract_bass_root(mono, self.sample_rate)
                 label, confidence = self._match_chord(chroma, bass_root=bass_root, bass_conf=bass_conf)
@@ -325,9 +329,17 @@ class ChordEstimator:
         else:
             self._viterbi_prev = None
             best_idx = int(np.argmax(emission))
-        # confidence from emission margin (top vs second)
-        top2 = np.partition(emission, -2)[-2:]
-        margin = float(top2[-1] - top2[-2]) if top2.size == 2 else float(top2[-1])
+        # confidence from emission: use top-3 separation for robustness
+        # if top is much higher than both 2nd and 3rd, confidence is higher
+        top3 = np.partition(emission, -3)[-3:]
+        if top3.size >= 3:
+            top_val = float(top3[-1])
+            second_val = float(top3[-2])
+            third_val = float(top3[-3])
+            # margin penalizes closeness to 2nd; boost if 3rd is much lower (2-horse race)
+            margin = (top_val - second_val) * (1.0 + 0.5 * (second_val - third_val) / (top_val + 1e-9))
+        else:
+            margin = float(top3[-1]) if top3.size > 0 else 0.0
         best_label = self.states[best_idx]
         return best_label, margin
 
@@ -376,16 +388,18 @@ class ChordEstimator:
             # FFT-length mismatches and stale timing assumptions.
             if window_changed:
                 self._onset_env_prev = None
+                self._downbeat_env_prev = None
                 self._onset_times.clear()
                 self._beat_interval = None
 
     def _smooth(self, label: str, confidence: float, timestamp: float) -> str:
-        """Smoothing with confidence-aware hysteresis.
+        """Smoothing with confidence-aware hysteresis and consecutive frame requirement.
 
         frame_queue holds (label, confidence). We compute the majority label
         and the average confidence for that label. New labels must either be a
-        fast change from silence or exceed a confidence threshold and be
-        sustained per `min_confirm_seconds` before being committed.
+        fast change from silence or exceed a confidence threshold, be sustained
+        per `min_confirm_seconds`, AND have at least ceil(smoothing_frames/2)
+        consecutive matching frames before being committed.
         """
         with self.lock:
             self.frame_queue.append((label, float(confidence)))
@@ -397,13 +411,21 @@ class ChordEstimator:
             # compute average confidence for majority label
             confidences = [c for l, c in self.frame_queue if l == majority]
             avg_conf = float(np.mean(confidences)) if confidences else 0.0
+            # count consecutive frames matching majority from right
+            consecutive = 0
+            for i in range(len(labels) - 1, -1, -1):
+                if labels[i] == majority:
+                    consecutive += 1
+                else:
+                    break
+            min_consecutive = max(2, len(self.frame_queue) // 2)
 
             # thresholds
             min_conf_threshold = 0.03
 
             if majority != self._last_label:
                 # allow faster first change from silence/unknown if confidence reasonable
-                if self._last_label == "N" and majority != "N" and avg_conf >= min_conf_threshold:
+                if self._last_label == "N" and majority != "N" and avg_conf >= min_conf_threshold and consecutive >= 2:
                     self._last_change_time = timestamp
                     self._last_label = majority
                     self._last_confidence = avg_conf
@@ -418,8 +440,11 @@ class ChordEstimator:
                 # require minimal confidence to avoid reacting to noise
                 if avg_conf < min_conf_threshold:
                     return self._last_label
-                # optionally require confidence improvement over previous
+                # require confidence improvement over previous
                 if avg_conf < (self._last_confidence + 0.02):
+                    return self._last_label
+                # require enough consecutive frames of majority label
+                if consecutive < min_consecutive:
                     return self._last_label
                 # commit
                 self._last_change_time = timestamp
@@ -434,6 +459,32 @@ class ChordEstimator:
             return majority
 
 
+    def _detect_downbeat(self, mono: NDArray[np.float32], sr: int, now: float) -> None:
+        """Detect downbeats (measure starts) based on low-frequency energy surge.
+        Complements onset detection for better measure alignment.
+        """
+        # extract low-frequency band (40-200 Hz) for downbeat cues
+        window = np.hanning(len(mono))
+        spec = np.abs(np.fft.rfft(mono * window))
+        freqs = np.fft.rfftfreq(len(mono), 1.0 / sr)
+        mask = (freqs >= 40.0) & (freqs <= 200.0)
+        if np.any(mask):
+            low_energy = float(np.mean(spec[mask]))
+        else:
+            low_energy = 0.0
+        
+        if self._downbeat_env_prev is None:
+            self._downbeat_env_prev = low_energy
+            return
+        # simple peak detection: if low-freq energy rises significantly
+        flux = low_energy - float(self._downbeat_env_prev)
+        self._downbeat_env_prev = low_energy
+        # adaptive threshold for downbeat detection
+        thresh = 0.0003 * len(spec)
+        if flux > thresh and self._beat_interval:
+            # downbeat candidates are spaced by beat_interval * beats_per_bar
+            self._onset_times.append(now)  # record as strong beat
+    
     def get_measures(self, beats_per_bar: int = 4) -> List[float]:
         """Return inferred measure (bar) start times based on recent onsets.
 
