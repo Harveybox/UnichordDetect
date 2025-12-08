@@ -55,8 +55,10 @@ class ChordEstimator:
         self.bass_high = bass_high
         self.bass_weight = bass_weight
         self.buffer: Deque[NDArray[np.int16]] = deque()
-        self.frame_queue: Deque[ChordEstimate] = deque(maxlen=smoothing_frames)
+        # frame_queue stores (label, confidence) tuples for better smoothing decisions
+        self.frame_queue: Deque[Tuple[str, float]] = deque(maxlen=smoothing_frames)
         self.lock = threading.Lock()
+        self._last_confidence: float = 0.0
         self.templates, self.states = self._build_templates()
         self.state_to_idx = {s: i for i, s in enumerate(self.states)}
         self._stop = threading.Event()
@@ -182,7 +184,7 @@ class ChordEstimator:
                 bass_root, bass_conf = self._extract_bass_root(mono, self.sample_rate)
                 label, confidence = self._match_chord(chroma, bass_root=bass_root, bass_conf=bass_conf)
                 timestamp = time_provider()
-                smoothed_label = self._smooth(label, timestamp)
+                smoothed_label = self._smooth(label, confidence, timestamp)
                 estimate = ChordEstimate(smoothed_label, confidence, timestamp)
                 if self.on_estimate:
                     self.on_estimate(estimate)
@@ -353,8 +355,8 @@ class ChordEstimator:
                 window_changed = True
             if "smoothing_frames" in params:
                 self.smoothing_frames = int(params["smoothing_frames"])
-                # resize frame_queue maxlen
-                self.frame_queue = deque(self.frame_queue, maxlen=self.smoothing_frames)
+                # resize frame_queue maxlen while preserving entries
+                self.frame_queue = deque(list(self.frame_queue), maxlen=self.smoothing_frames)
             if "min_confirm_seconds" in params:
                 self.min_confirm_seconds = float(params["min_confirm_seconds"])
             if "chroma_ema" in params:
@@ -377,31 +379,73 @@ class ChordEstimator:
                 self._onset_times.clear()
                 self._beat_interval = None
 
-    def _smooth(self, label: str, timestamp: float) -> str:
+    def _smooth(self, label: str, confidence: float, timestamp: float) -> str:
+        """Smoothing with confidence-aware hysteresis.
+
+        frame_queue holds (label, confidence). We compute the majority label
+        and the average confidence for that label. New labels must either be a
+        fast change from silence or exceed a confidence threshold and be
+        sustained per `min_confirm_seconds` before being committed.
+        """
         with self.lock:
-            self.frame_queue.append(label)
+            self.frame_queue.append((label, float(confidence)))
             if len(self.frame_queue) > self.smoothing_frames:
                 self.frame_queue.popleft()
-            counter = Counter(self.frame_queue)
+            labels = [l for l, c in self.frame_queue]
+            counter = Counter(labels)
             majority = counter.most_common(1)[0][0]
+            # compute average confidence for majority label
+            confidences = [c for l, c in self.frame_queue if l == majority]
+            avg_conf = float(np.mean(confidences)) if confidences else 0.0
+
+            # thresholds
+            min_conf_threshold = 0.03
+
             if majority != self._last_label:
-                # allow faster first change from silence/unknown
-                if self._last_label == "N" and majority != "N":
+                # allow faster first change from silence/unknown if confidence reasonable
+                if self._last_label == "N" and majority != "N" and avg_conf >= min_conf_threshold:
                     self._last_change_time = timestamp
                     self._last_label = majority
+                    self._last_confidence = avg_conf
                     return majority
                 # require minimum duration before committing change
                 if self._last_change_time is None:
                     self._last_change_time = timestamp
                     return self._last_label
+                # require sustained duration
                 if timestamp - self._last_change_time < self.min_confirm_seconds:
                     return self._last_label
+                # require minimal confidence to avoid reacting to noise
+                if avg_conf < min_conf_threshold:
+                    return self._last_label
+                # optionally require confidence improvement over previous
+                if avg_conf < (self._last_confidence + 0.02):
+                    return self._last_label
+                # commit
                 self._last_change_time = timestamp
                 self._last_label = majority
+                self._last_confidence = avg_conf
                 return majority
+
+            # same as previous label: update timestamps/confidence
             self._last_change_time = timestamp
+            self._last_confidence = avg_conf
             self._last_label = majority
             return majority
+
+
+    def get_measures(self, beats_per_bar: int = 4) -> List[float]:
+        """Return inferred measure (bar) start times based on recent onsets.
+
+        This is a heuristic: we group the recent onset times into measures by
+        taking every `beats_per_bar`-th onset as a measure start. It provides a
+        reasonable visual guideline for the UI to draw bar lines.
+        """
+        with self.lock:
+            onsets = list(self._onset_times)
+        if not onsets:
+            return []
+        return [onsets[i] for i in range(0, len(onsets), beats_per_bar)]
 
 
 __all__ = ["ChordEstimator", "ChordEstimate"]
