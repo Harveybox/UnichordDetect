@@ -85,6 +85,7 @@ def run_app(
     sample_rate, _channels = capture.start()
 
     timeline = Timeline(max_duration=params["timeline_max_seconds"])
+
     if engine == "autochord":
         estimator = AutoChordStreamingEstimator(
             sample_rate=sample_rate,
@@ -143,23 +144,30 @@ def run_app(
 
     fetch_segments = lambda: timeline.get_recent()
     fetch_beats = lambda: estimator.get_onsets() if hasattr(estimator, 'get_onsets') else []
+    fetch_measures = lambda: estimator.get_measures() if hasattr(estimator, 'get_measures') else []
 
     # callback from UI when settings change
     def on_settings_change(settings: dict):
-        # settings may include low_latency and bass focus; map to estimator update
+        # settings may include low_latency, bass focus, smoothing params
         try:
+            # Handle min_segment_duration for timeline
+            if "min_segment_duration" in settings:
+                timeline.min_segment_duration = float(settings["min_segment_duration"])
+            
             # if low_latency toggled, pick base preset
             if "low_latency" in settings:
                 preset = LOW_LATENCY if settings.get("low_latency") else DEFAULTS
-                # copy bass settings from UI into preset
+                # copy all settings from UI into preset
                 preset = dict(preset)
                 preset["bass_focus"] = settings.get("bass_focus", preset.get("bass_focus", False))
                 preset["bass_low"] = settings.get("bass_low", preset.get("bass_low", 50.0))
                 preset["bass_high"] = settings.get("bass_high", preset.get("bass_high", 350.0))
                 preset["bass_weight"] = settings.get("bass_weight", preset.get("bass_weight", 3.0))
+                preset["min_confirm_seconds"] = settings.get("min_confirm_seconds", preset.get("min_confirm_seconds", 0.5))
+                preset["smoothing_frames"] = int(settings.get("smoothing_frames", preset.get("smoothing_frames", 4)))
                 estimator.update_params(preset)
             else:
-                # only bass parameters changed
+                # other parameters changed (including smoothing)
                 estimator.update_params(settings)
         except Exception:
             pass
@@ -176,8 +184,12 @@ def run_app(
                 "bass_high": params.get("bass_high", 350.0),
                 "bass_weight": params.get("bass_weight", 3.0),
                 "use_viterbi": params.get("use_viterbi", False),
+                "min_confirm_seconds": params.get("min_confirm_seconds", 0.5),
+                "min_segment_duration": params.get("min_segment_duration", 0.25),
+                "smoothing_frames": params.get("smoothing_frames", 4),
             },
             fetch_beats=fetch_beats,
+            fetch_measures=fetch_measures,
         )
     finally:
         stop_all()

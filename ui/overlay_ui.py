@@ -13,6 +13,7 @@ class TimelineWidget(QtWidgets.QWidget):
         self.display_seconds = display_seconds
         self.segments: List[Segment] = []
         self.beats: List[float] = []
+        self.measures: List[float] = []  # measure (bar) starts
         self.setMinimumHeight(140)
 
     def update_segments(self, segments: List[Segment]):
@@ -26,6 +27,16 @@ class TimelineWidget(QtWidgets.QWidget):
         now = self.segments[-1].end if self.segments else time.time()
         width = self.width()
         height = self.height()
+        
+        # draw measure lines (thick, colored) first as background
+        painter.setPen(QtGui.QPen(QtGui.QColor(200, 150, 100, 120), 2.5, QtCore.Qt.SolidLine))
+        for m in self.measures:
+            offset = max(0.0, now - m)
+            if offset > self.display_seconds:
+                continue
+            x = width * (1 - offset / self.display_seconds)
+            painter.drawLine(int(x), 0, int(x), height)
+        
         # draw beat markers as thin vertical lines
         painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 90), 1, QtCore.Qt.SolidLine))
         for b in self.beats:
@@ -70,6 +81,11 @@ class TimelineWidget(QtWidgets.QWidget):
         color = colors[idx]
         color.setAlpha(220)
         return color
+    
+    def update_measures(self, measures: List[float]):
+        """Update measure (bar) line positions."""
+        self.measures = measures
+        self.update()
 
 
 class OverlayWindow(QtWidgets.QWidget):
@@ -123,6 +139,23 @@ class OverlayWindow(QtWidgets.QWidget):
         controls_layout.addWidget(QtWidgets.QLabel("Timeline Width:"))
         controls_layout.addWidget(self.display_seconds_sb)
 
+        # smoothing parameters
+        smooth_inner = QtWidgets.QFormLayout()
+        self.min_confirm_sb = QtWidgets.QDoubleSpinBox()
+        self.min_confirm_sb.setRange(0.1, 5.0)
+        self.min_confirm_sb.setSuffix(" s")
+        self.min_confirm_sb.setSingleStep(0.1)
+        self.min_seg_duration_sb = QtWidgets.QDoubleSpinBox()
+        self.min_seg_duration_sb.setRange(0.05, 2.0)
+        self.min_seg_duration_sb.setSuffix(" s")
+        self.min_seg_duration_sb.setSingleStep(0.05)
+        self.smoothing_frames_sb = QtWidgets.QSpinBox()
+        self.smoothing_frames_sb.setRange(1, 30)
+        smooth_inner.addRow("Confirm Delay:", self.min_confirm_sb)
+        smooth_inner.addRow("Min Seg Duration:", self.min_seg_duration_sb)
+        smooth_inner.addRow("Smoothing Frames:", self.smoothing_frames_sb)
+        controls_layout.addLayout(smooth_inner)
+
         # bass param controls
         bass_inner = QtWidgets.QFormLayout()
         self.bass_low_sb = QtWidgets.QDoubleSpinBox()
@@ -163,6 +196,9 @@ class OverlayWindow(QtWidgets.QWidget):
         self.bass_low_sb.valueChanged.connect(self._emit_settings)
         self.bass_high_sb.valueChanged.connect(self._emit_settings)
         self.bass_weight_sb.valueChanged.connect(self._emit_settings)
+        self.min_confirm_sb.valueChanged.connect(self._emit_settings)
+        self.min_seg_duration_sb.valueChanged.connect(self._emit_settings)
+        self.smoothing_frames_sb.valueChanged.connect(self._emit_settings)
 
     def update_view(self, segments: List[Segment]):
         self.timeline_widget.update_segments(segments)
@@ -192,6 +228,9 @@ class OverlayWindow(QtWidgets.QWidget):
         self.bass_weight_sb.setValue(float(s.get("bass_weight", 3.0)))
         self.viterbi_cb.setChecked(bool(s.get("use_viterbi", False)))
         self.display_seconds_sb.setValue(float(s.get("ui_display_seconds", 90.0)))
+        self.min_confirm_sb.setValue(float(s.get("min_confirm_seconds", 0.8)))
+        self.min_seg_duration_sb.setValue(float(s.get("min_segment_duration", 0.25)))
+        self.smoothing_frames_sb.setValue(int(s.get("smoothing_frames", 7)))
         # apply immediately
         try:
             self.timeline_widget.display_seconds = float(s.get("ui_display_seconds", 90.0))
@@ -208,6 +247,9 @@ class OverlayWindow(QtWidgets.QWidget):
             "bass_low": float(self.bass_low_sb.value()),
             "bass_high": float(self.bass_high_sb.value()),
             "bass_weight": float(self.bass_weight_sb.value()),
+            "min_confirm_seconds": float(self.min_confirm_sb.value()),
+            "min_segment_duration": float(self.min_seg_duration_sb.value()),
+            "smoothing_frames": int(self.smoothing_frames_sb.value()),
         }
         try:
             self._on_settings_change(s)
@@ -226,8 +268,12 @@ class OverlayWindow(QtWidgets.QWidget):
         self.timeline_widget.beats = beats
         self.timeline_widget.update()
 
+    def update_measures(self, measures: List[float]):
+        """Update measure (bar) line positions from estimator."""
+        self.timeline_widget.update_measures(measures)
 
-def run_overlay_app(fetch_segments, refresh_ms: int = 30, display_seconds: float = 60.0, on_settings_change=None, initial_settings=None, fetch_beats=None):
+
+def run_overlay_app(fetch_segments, refresh_ms: int = 30, display_seconds: float = 60.0, on_settings_change=None, initial_settings=None, fetch_beats=None, fetch_measures=None):
     app = QtWidgets.QApplication(sys.argv)
     window = OverlayWindow(display_seconds=display_seconds, on_settings_change=on_settings_change, initial_settings=initial_settings)
 
@@ -237,6 +283,8 @@ def run_overlay_app(fetch_segments, refresh_ms: int = 30, display_seconds: float
             window.update_view(fetch_segments())
             if fetch_beats:
                 window.update_beats(fetch_beats())
+            if fetch_measures:
+                window.update_measures(fetch_measures())
         except Exception:
             pass
 
