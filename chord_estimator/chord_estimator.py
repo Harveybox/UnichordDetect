@@ -6,6 +6,8 @@ import numpy as np
 from numpy.typing import NDArray
 import math
 import time
+import os
+import logging
 
 
 class ChordEstimate:
@@ -198,6 +200,17 @@ class ChordEstimator:
                 window = current[-window_size :]
                 mono = window.mean(axis=1).astype(np.float32) / 32768.0
                 rms = float(np.sqrt(np.mean(mono * mono)))
+                # optional debug logging controlled via env var
+                if os.environ.get("UNICHORD_DEBUG"):
+                    logging.basicConfig(level=logging.DEBUG)
+                    logging.debug(
+                        "rms=%.6f window_size=%d hop=%d silence_rms=%.6f",
+                        rms,
+                        window_size,
+                        hop,
+                        self.silence_rms,
+                    )
+
                 if rms < self.silence_rms:
                     self._reset_state_for_silence()
                     if self.on_estimate:
@@ -208,6 +221,16 @@ class ChordEstimator:
 
                 # compute chroma and also track onset / beat info and bass energy
                 chroma = self._compute_chroma_from_mono(mono, self.sample_rate)
+                # debug: inspect chroma energy and values
+                if os.environ.get("UNICHORD_DEBUG"):
+                    try:
+                        # compute raw spectrum energy for logging
+                        window_f = np.hanning(len(mono))
+                        spectrum = np.abs(np.fft.rfft(mono * window_f))
+                        spec_energy = float(np.sum(spectrum))
+                        logging.debug("spec_energy=%.6f chroma_sum=%.6f", spec_energy, float(chroma.sum()))
+                    except Exception:
+                        pass
                 # update onset env and beat tracker (use real time epoch for UI)
                 self._update_onset_and_beat(mono, self.sample_rate, time.time())
                 # detect downbeats for measure-line visualization
@@ -215,6 +238,8 @@ class ChordEstimator:
                 # attempt bass root extraction
                 bass_root, bass_conf = self._extract_bass_root(mono, self.sample_rate)
                 label, confidence = self._match_chord(chroma, bass_root=bass_root, bass_conf=bass_conf)
+                if os.environ.get("UNICHORD_DEBUG"):
+                    logging.debug("match label=%s confidence=%.6f bass_root=%s bass_conf=%.6f", label, confidence, str(bass_root), bass_conf)
                 timestamp = time_provider()
                 smoothed_label = self._smooth(label, confidence, timestamp)
                 estimate = ChordEstimate(smoothed_label, confidence, timestamp)
