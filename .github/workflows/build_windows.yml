@@ -1,0 +1,45 @@
+name: Build Windows executable
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - 'codex/**'
+      - 'main'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Try install pyaudiowpatch (preferred for WASAPI loopback)
+        run: |
+          python -m pip install pyaudiowpatch || echo "pyaudiowpatch not available, will use soundcard fallback"
+
+      - name: Install dependencies from requirements
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executables with PyInstaller
+        run: |
+          # Build GUI (no console) binary
+          pyinstaller --noconsole --onefile --name unichord_gui main.py
+          # Build console binary for diagnostics (captures stdout)
+          pyinstaller --onefile --name unichord_console main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnichordDetect-windows
+          path: dist/**/*
