@@ -244,7 +244,10 @@ class ChordEstimator:
         # quick spectral flux onset detector
         window = np.hanning(len(mono))
         spec = np.abs(np.fft.rfft(mono * window))
-        if self._onset_env_prev is None:
+        # If previous onset env is missing or the FFT lengths changed (e.g. window/hop
+        # updated for low-latency), reinitialize and skip a flux computation to
+        # avoid shape mismatch errors.
+        if self._onset_env_prev is None or self._onset_env_prev.shape != spec.shape:
             self._onset_env_prev = spec
             return
         flux = np.sum(np.maximum(spec - self._onset_env_prev, 0.0))
@@ -341,12 +344,13 @@ class ChordEstimator:
         This is thread-safe and will affect subsequent processing.
         """
         with self.lock:
+            window_changed = False
             if "window_seconds" in params:
                 self.window_size = int(params["window_seconds"] * self.sample_rate)
-                # reset onset state when window changes (spectral size will differ)
-                self._onset_env_prev = None
+                window_changed = True
             if "hop_seconds" in params:
                 self.hop_size = int(params["hop_seconds"] * self.sample_rate)
+                window_changed = True
             if "smoothing_frames" in params:
                 self.smoothing_frames = int(params["smoothing_frames"])
                 # resize frame_queue maxlen
@@ -366,6 +370,12 @@ class ChordEstimator:
                 self.bass_weight = float(params["bass_weight"])
             if "use_viterbi" in params:
                 self.use_viterbi = bool(params["use_viterbi"])
+            # If window/hop have changed, reset onset/beat state to avoid
+            # FFT-length mismatches and stale timing assumptions.
+            if window_changed:
+                self._onset_env_prev = None
+                self._onset_times.clear()
+                self._beat_interval = None
 
     def _smooth(self, label: str, timestamp: float) -> str:
         with self.lock:
